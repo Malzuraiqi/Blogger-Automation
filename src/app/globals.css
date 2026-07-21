@@ -1,0 +1,24 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer components {
+  .card {
+    @apply bg-ink-2 border border-border rounded-[10px] p-5;
+  }
+  .btn {
+    @apply bg-ink-3 text-paper border border-border rounded-lg px-4 py-2 text-sm font-medium inline-flex items-center gap-2 transition-colors hover:border-paper-faint disabled:opacity-40 disabled:cursor-not-allowed;
+  }
+  .btn-spark {
+    @apply bg-spark text-[#0E1020] border-spark hover:bg-[#8E9BFF] hover:border-[#8E9BFF];
+  }
+  .btn-ghost {
+    @apply bg-transparent border border-border;
+  }
+  .tag {
+    @apply text-[11px] px-[9px] py-[3px] rounded-full bg-ink-3 text-paper-dim border border-border;
+  }
+  .status-pill {
+    @apply text-[11px] px-[10px] py-[4px] rounded-full font-semibold capitalize;
+  }
+}
