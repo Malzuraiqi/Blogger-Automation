@@ -1,3 +1,6 @@
+// FILE: src/lib/types.ts
+// shared TypeScript types (Label, Idea, Article, ArticleImage, ArticleLink, etc.).
+
 export type PipelineStatus = "idea" | "researching" | "drafting" | "editing" | "published";
 
 export interface Label {
@@ -40,6 +43,15 @@ export interface Article {
   reading_time_minutes: number;
   banned_word_hits: { word: string; count: number }[];
   status: PipelineStatus;
+  updated_at: string;
+  // Set only when "Generate Article" (re)writes content — compared against
+  // updated_at to flag "edited since last generation" in the UI.
+  content_generated_at: string | null;
+  // Blogger pipeline additions
+  html: string | null;
+  blogger_labels: string[];
+  published_url: string | null;
+  links_inserted: boolean;
 }
 
 export interface ArticleSeo {
@@ -57,8 +69,10 @@ export interface ArticleImage {
   article_id: string;
   is_featured: boolean;
   placement: string;
-  description: string;
-  purpose: string;
+  caption: string | null;
+  prompt: string | null;
+  image_url: string | null;
+  sort_order: number;
 }
 
 export interface ArticleLink {
@@ -66,6 +80,16 @@ export interface ArticleLink {
   article_id: string;
   link_type: "internal_past" | "internal_future" | "external";
   target_title: string;
+  target_url?: string | null;
   category: string | null;
   placement_note: string;
+}
+
+export interface BloggerCredentials {
+  id: string;
+  access_token: string;
+  refresh_token: string | null;
+  expires_at: string | null;
+  blog_id: string | null;
+  blog_url: string | null;
 }

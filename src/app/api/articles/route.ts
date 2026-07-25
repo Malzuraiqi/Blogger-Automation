@@ -1,5 +1,10 @@
+// FILE: src/app/api/articles/route.ts
+// GET/POST/PATCH/DELETE for articles (list, create draft from an idea, update fields, delete).
+
 import { NextRequest, NextResponse } from "next/server";
 import { supabaseServer } from "@/lib/supabase";
+
+export const dynamic = "force-dynamic";
 
 export async function GET(req: NextRequest) {
   const sb = supabaseServer();
@@ -34,12 +39,29 @@ export async function POST(req: NextRequest) {
   return NextResponse.json(data);
 }
 
+// Used both for pipeline status changes AND for manual content edits (title,
+// subtitle, tldr, sections, conclusion) coming from the editor's "Save
+// changes" button. Any PATCH here counts as an edit, so updated_at always
+// moves forward — this is what lets the UI detect "edited since last
+// generation" by comparing against content_generated_at.
 export async function PATCH(req: NextRequest) {
   const sb = supabaseServer();
   const body = await req.json();
   if (!body.id) return NextResponse.json({ error: "id is required" }, { status: 400 });
   const { id, ...updates } = body;
+  updates.updated_at = new Date().toISOString();
   const { data, error } = await sb.from("articles").update(updates).eq("id", id).select().single();
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
   return NextResponse.json(data);
+}
+
+// Deletes an article. article_seo/article_images/article_links all cascade
+// via their foreign keys, so nothing orphaned is left behind.
+export async function DELETE(req: NextRequest) {
+  const sb = supabaseServer();
+  const id = req.nextUrl.searchParams.get("id");
+  if (!id) return NextResponse.json({ error: "id is required" }, { status: 400 });
+  const { error } = await sb.from("articles").delete().eq("id", id);
+  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+  return NextResponse.json({ ok: true });
 }

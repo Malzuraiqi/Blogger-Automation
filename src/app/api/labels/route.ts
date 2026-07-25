@@ -1,5 +1,16 @@
+// FILE: src/app/api/labels/route.ts
+// GET/POST for labels (list, create new label).
+
 import { NextRequest, NextResponse } from "next/server";
 import { supabaseServer } from "@/lib/supabase";
+
+// Without this, Next.js's App Router can treat this GET handler as static
+// and cache its response, since nothing inside it reads cookies/headers.
+// That means a successful write elsewhere could still appear to "not show
+// up" in the UI because refreshAll() was served a stale cached snapshot
+// instead of hitting the database again. force-dynamic guarantees every
+// call actually queries Supabase.
+export const dynamic = "force-dynamic";
 
 export async function GET() {
   const sb = supabaseServer();

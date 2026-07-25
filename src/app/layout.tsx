@@ -1,11 +1,13 @@
 import type { Metadata } from "next";
+// Suppress TypeScript warning for side-effect CSS import when no global CSS types are declared
+// @ts-ignore
 import "./globals.css";
-
+ 
 export const metadata: Metadata = {
   title: "Synapse Snaps — Studio",
   description: "Content automation studio for Synapse Snaps",
 };
-
+ 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="en">
@@ -20,3 +22,4 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
     </html>
   );
 }
+ 

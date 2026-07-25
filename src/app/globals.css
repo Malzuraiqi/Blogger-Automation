@@ -1,7 +1,7 @@
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
-
+ 
 @layer components {
   .card {
     @apply bg-ink-2 border border-border rounded-[10px] p-5;
