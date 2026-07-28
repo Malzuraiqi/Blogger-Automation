@@ -129,8 +129,8 @@ export async function generateImage(prompt: string): Promise<string> {
 async function generateWithHuggingFace(prompt: string): Promise<string> {
   const token = process.env.HF_TOKEN;
   if (!token) throw new Error("Missing HF_TOKEN for Hugging Face image generation.");
-  const model = process.env.HF_IMAGE_MODEL || "black-forest-labs/FLUX.1-schnell";
-  const endpoint = `https://api-inference.huggingface.co/models/${model}`;
+  const model = process.env.HF_IMAGE_MODEL;
+  const endpoint = `https://router.huggingface.co/hf-inference/models/${model}`;
 
   const call = () =>
     fetchWithRetry(
