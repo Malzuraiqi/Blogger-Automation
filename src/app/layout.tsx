@@ -7,6 +7,9 @@ import "bootstrap-icons/font/bootstrap-icons.css";
 export const metadata: Metadata = {
   title: "Synapse Snaps — Studio",
   description: "Content automation studio for Synapse Snaps",
+  icons: {
+    icon: "/favicon.ico",
+  },
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {

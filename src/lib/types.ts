@@ -54,6 +54,8 @@ export interface Article {
   links_inserted: boolean;
   permalink: string | null;
   content_type: string | null;
+  published_at: string | null;
+  blogger_post_id: string | null;
 }
 
 export interface ArticleSeo {

@@ -104,7 +104,7 @@ export async function listBlogs(accessToken: string) {
 export async function publishPost(
   accessToken: string,
   blogId: string,
-  post: { title: string; content: string; labels: string[]; searchDescription?: string; isDraft: boolean; publishDate?: string; url?: string }
+  post: { title: string; content: string; labels: string[]; searchDescription?: string; isDraft: boolean; publishDate?: string }
 ) {
   const params = new URLSearchParams();
   if (post.isDraft) params.set("isDraft", "true");
@@ -118,9 +118,59 @@ export async function publishPost(
       labels: post.labels,
       ...(post.searchDescription ? { searchDescription: post.searchDescription } : {}),
       ...(post.publishDate ? { published: post.publishDate } : {}),
-      ...(post.url ? { url: post.url } : {}),
     }),
   });
   if (!res.ok) throw new Error(`Blogger publish failed: ${await res.text()}`);
   return res.json() as Promise<{ id: string; url: string }>;
+}
+
+// Publishes an EXISTING (already-drafted) post live, without creating a
+// duplicate. This is the correct call when promoting something out of the
+// Approval Queue that was already saved as a Blogger draft.
+export async function publishExistingPost(accessToken: string, blogId: string, postId: string, publishDate?: string) {
+  const params = new URLSearchParams();
+  if (publishDate) params.set("publishDate", publishDate);
+  const url = `https://www.googleapis.com/blogger/v3/blogs/${blogId}/posts/${postId}/publish${params.toString() ? `?${params}` : ""}`;
+  const res = await fetch(url, { method: "POST", headers: { Authorization: `Bearer ${accessToken}` } });
+  if (!res.ok) throw new Error(`Blogger publish (existing post) failed: ${await res.text()}`);
+  return res.json() as Promise<{ id: string; url: string }>;
+}
+
+// Blog-WIDE pageview counts. Confirmed via Blogger's API docs: the
+// pageViews resource only reports at the blog level (7DAYS/30DAYS/all) —
+// there is no per-post breakdown in the public API. Per-article stats
+// would require wiring up Google Analytics (GA4 Data API) separately,
+// matching pageviews back to posts by URL — a much bigger integration,
+// not something to bolt on here.
+// src/lib/blogger.ts — replace getPageViews
+export async function getPageViews(accessToken: string, blogId: string, ranges: string[] = ["7DAYS", "30DAYS", "all"]) {
+  const params = new URLSearchParams();
+  ranges.forEach((r) => params.append("range", r));
+  const res = await fetch(`https://www.googleapis.com/blogger/v3/blogs/${blogId}/pageviews?${params.toString()}`, {
+    headers: { Authorization: `Bearer ${accessToken}` },
+  });
+  if (!res.ok) throw new Error(`Blogger pageViews failed: ${await res.text()}`);
+  const data = await res.json();
+  const raw: any[] = data.counts || [];
+
+  function normalize(reported: string | undefined, requested: string): string {
+    const key = (reported || requested || "").toUpperCase();
+    if (key === "7DAYS") return "Last 7 days";
+    if (key === "30DAYS") return "Last 30 days";
+    if (key === "ALL") return "All time";
+    return requested;
+  }
+
+  // Zip positionally against what we actually requested — more robust
+  // than trusting the response's own labeling, which is inconsistent.
+  return raw.map((c, i) => ({ label: normalize(c.timeRange, ranges[i]), count: c.count }));
+}
+
+// src/lib/blogger.ts
+export async function getPost(accessToken: string, blogId: string, postId: string) {
+  const res = await fetch(`https://www.googleapis.com/blogger/v3/blogs/${blogId}/posts/${postId}?view=ADMIN`, {
+    headers: { Authorization: `Bearer ${accessToken}` },
+  });
+  if (!res.ok) throw new Error(`Blogger getPost failed: ${await res.text()}`);
+  return res.json() as Promise<{ id: string; url: string; published: string; status?: string }>;
 }

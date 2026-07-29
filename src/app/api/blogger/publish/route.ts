@@ -1,12 +1,8 @@
 // FILE: src/app/api/blogger/publish/route.ts
-// POST: publishes (or drafts) the article's HTML to Blogger. Hit by "Save draft on Blogger" / "Publish to Blogger".
-
 import { NextRequest, NextResponse } from "next/server";
 import { supabaseServer } from "@/lib/supabase";
-import { getValidAccessToken, publishPost } from "@/lib/blogger";
+import { getValidAccessToken, publishPost, publishExistingPost } from "@/lib/blogger";
 
-// Step 8 (optional) of the pipeline: "Publish to Blogger".
-// Body: { articleId, mode: "draft" | "publish" | "schedule", publishAt?: ISO string }
 export async function POST(req: NextRequest) {
   const sb = supabaseServer();
   const { articleId, mode, publishAt } = await req.json();
@@ -15,6 +11,8 @@ export async function POST(req: NextRequest) {
   const { data: article } = await sb.from("articles").select("*, article_seo(*)").eq("id", articleId).single();
   if (!article) return NextResponse.json({ error: "Article not found" }, { status: 404 });
   if (!article.html) return NextResponse.json({ error: "Generate the HTML for this article first." }, { status: 400 });
+
+  const { data: label } = await sb.from("labels").select("name").eq("id", article.label_id).single();
 
   let accessToken: string, blogId: string | null;
   try {
@@ -29,21 +27,39 @@ export async function POST(req: NextRequest) {
   }
 
   const seo = Array.isArray(article.article_seo) ? article.article_seo[0] : article.article_seo;
+  // Auto-fill the Blogger label/category from this app's own label if one
+  // hasn't been manually set — no more copy-pasting it in by hand.
+  const bloggerLabels: string[] = article.blogger_labels?.length ? article.blogger_labels : ([label?.name].filter(Boolean) as string[]);
 
   try {
-    const result = await publishPost(accessToken, blogId, {
-      title: (seo?.seo_title || article.title) as string,
-      content: article.html,
-      labels: article.blogger_labels || [],
-      searchDescription: seo?.meta_description || undefined,
-      isDraft: mode === "draft",
-      publishDate: mode === "schedule" ? publishAt : undefined,
-      url: article.permalink || undefined,   // <-- add this
-    });
+    let result: { id: string; url: string };
+
+    if (mode === "publish" && article.blogger_post_id) {
+      // Already sitting as a draft — promote that SAME post, don't create
+      // a second one.
+      result = await publishExistingPost(accessToken, blogId, article.blogger_post_id, publishAt);
+    } else {
+      result = await publishPost(accessToken, blogId, {
+        title: article.title,
+        content: article.html,
+        labels: bloggerLabels,
+        searchDescription: seo?.meta_description || undefined,
+        isDraft: mode === "draft",
+        publishDate: mode === "schedule" ? publishAt : undefined,
+      });
+    }
 
     await sb
       .from("articles")
-      .update({ status: "published", published_url: result.url, published_at: mode === "publish" ? new Date().toISOString() : article.published_at })
+      .update({
+        // The bug: this used to always flip to "published", even for a
+        // Blogger DRAFT — which silently removed drafted articles from
+        // the Approval Queue. Only a genuine live publish should do that.
+        status: mode === "publish" ? "published" : article.status,
+        published_url: result.url || article.published_url,
+        published_at: mode === "publish" ? new Date().toISOString() : article.published_at,
+        blogger_post_id: result.id,
+      })
       .eq("id", articleId);
 
     return NextResponse.json(result);

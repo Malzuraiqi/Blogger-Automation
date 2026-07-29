@@ -15,7 +15,7 @@ import type {
 const CONTENT_TYPES = ["factual", "opinion", "research", "listicle", "narrative"] as const;
 const BLOG_URL = "https://synapsesnaps.blogspot.com";
 
-type View = "labels" | "strategy" | "pipeline" | "editor" | "queue" | "search" | "style";
+type View = "labels" | "strategy" | "pipeline" | "editor" | "queue" | "calendar" | "search" | "style";
 type EditorTab = "images" | "links";
 type LoadingKey =
   | "ideas"
@@ -588,6 +588,36 @@ export default function Studio() {
     }
   }
 
+  async function bulkDeleteIdeas(ids: string[]) {
+    if (!ids.length) return;
+    if (!window.confirm(`Delete ${ids.length} idea(s)? This can't be undone.`)) return;
+    try {
+      await Promise.all(ids.map((id) => api(`/api/ideas?id=${id}`, { method: "DELETE" })));
+      await refreshAll();
+      toast(`Deleted ${ids.length} idea(s).`);
+    } catch (e: any) {
+      setError(e.message);
+    }
+  }
+
+  async function bulkSetContentType(ids: string[], contentType: string) {
+    if (!ids.length) return;
+    try {
+      await Promise.all(
+        ids.map((id) =>
+          api("/api/ideas", {
+            method: "PATCH",
+            body: JSON.stringify({ id, content_type: contentType }),
+          }),
+        ),
+      );
+      await refreshAll();
+      toast(`Set content type for ${ids.length} idea(s).`);
+    } catch (e: any) {
+      setError(e.message);
+    }
+  }
+
   return (
     <div className="flex min-h-screen" style={{ background: "var(--bg-base)" }}>
       <Rail
@@ -628,6 +658,7 @@ export default function Studio() {
               setView("strategy");
             }}
             onUpdateLabel={updateLabel}
+            toast={toast}
           />
         )}
 
@@ -642,6 +673,8 @@ export default function Studio() {
             onPromote={promoteToDraft}
             onDelete={deleteIdea}
             onChangeContentType={updateIdeaContentType}
+            onBulkDelete={bulkDeleteIdeas}
+            onBulkSetContentType={bulkSetContentType}
           />
         )}
 
@@ -727,6 +760,14 @@ export default function Studio() {
             onPublish={(id: string, mode: "draft" | "publish") => publishToBlogger(id, mode)}
           />
         )}
+
+        {view === "calendar" && <CalendarView
+          articles={articles}
+          labels={labels}
+          toast={toast}
+          onRefresh={refreshAll}
+          onOpen={(id: string) => { setActiveArticleId(id); setView("editor"); }}
+        />}
 
         {view === "search" && (
           <SearchView
@@ -836,7 +877,7 @@ function Rail({ view, setView, labels, ideas, articles }: any) {
   const { isDark, toggle } = useTheme();
 
   const items: { id: View; label: string; count: number | null }[] = [
-    { id: "labels", label: "Labels", count: labels.length },
+    { id: "labels", label: "Home", count: labels.length },
     {
       id: "strategy",
       label: "Content strategy",
@@ -845,6 +886,7 @@ function Rail({ view, setView, labels, ideas, articles }: any) {
     { id: "pipeline", label: "Pipeline", count: ideas.length },
     { id: "editor", label: "Editor", count: articles.length },
     { id: "queue", label: "Approval queue", count: articles.filter((a: Article) => a.html && a.status !== "published").length },
+    { id: "calendar", label: "Calendar", count: null },
     { id: "style", label: "Style", count: null },
     { id: "search", label: "Search", count: null },
   ];
@@ -983,10 +1025,122 @@ function Rail({ view, setView, labels, ideas, articles }: any) {
 }
 
 // ─── Labels view ───────────────────────────────────────────────────────────
-function LabelsView({ labels, articles, ideas, newLabelName, setNewLabelName, addLabel, onSelect, onUpdateLabel }: any) {
+function AutopilotPanel({ toast }: any) {
+  const [runs, setRuns] = useState<any[] | null>(null);
+  const [running, setRunning] = useState(false);
+
+  async function load() {
+    try {
+      setRuns(await api<any[]>("/api/autopilot"));
+    } catch {
+      /* stay silent here — the panel just shows "no runs yet" */
+    }
+  }
+
+  useEffect(() => {
+    load();
+  }, []);
+
+  async function runNow() {
+    setRunning(true);
+    toast("Autopilot started — this can take a minute or two depending on how many labels need work.", "info", 6000);
+    try {
+      await api("/api/autopilot", { method: "POST" });
+      await load();
+      toast("Autopilot run finished — see the log below.");
+    } catch (e: any) {
+      toast(e.message, "error");
+    }
+    setRunning(false);
+  }
+
+  const lastRun = runs?.[0];
+
+  return (
+    <div
+      className="rounded-[10px] p-4 mb-8"
+      style={{ background: "var(--bg-surface)", border: "1px solid var(--border-hair)" }}
+    >
+      <div className="flex justify-between items-center mb-3">
+        <div
+          style={{
+            fontSize: "10px",
+            letterSpacing: "0.16em",
+            textTransform: "uppercase",
+            color: "var(--text-faint)",
+            fontWeight: 600,
+          }}
+        >
+          Autopilot
+        </div>
+        <button
+          className="btn btn-spark"
+          style={{ fontSize: "12px", padding: "5px 12px" }}
+          disabled={running}
+          onClick={runNow}
+        >
+          {running ? "Running…" : "Run now"}
+        </button>
+      </div>
+      {lastRun ? (
+        <div style={{ fontSize: "12px", color: "var(--text-secondary)" }}>
+          Last run: {new Date(lastRun.ran_at).toLocaleString()} ({lastRun.triggered_by})
+          <div className="mt-2 space-y-1">
+            {lastRun.results.map((r: any, i: number) => (
+              <div key={i}>
+                <b style={{ color: "var(--text-primary)" }}>{r.label}:</b> {r.actions.join(" ")}
+              </div>
+            ))}
+          </div>
+        </div>
+      ) : (
+        <div style={{ fontSize: "12px", color: "var(--text-faint)" }}>
+          No runs recorded yet — scheduled daily at 05:00 UTC (09:00 Ajman), or trigger one manually above.
+        </div>
+      )}
+    </div>
+  );
+}
+
+function BlogStatsPanel() {
+  const [counts, setCounts] = useState<{ label: string; count: string }[] | null>(null);
+  const [failed, setFailed] = useState(false);
+
+  useEffect(() => {
+    api<{ label: string; count: string }[]>("/api/blogger/stats").then(setCounts).catch(() => setFailed(true));
+  }, []);
+
+  if (failed || !counts) return null;
+
+  return (
+    <div className="rounded-[10px] p-4 mb-8" style={{ background: "var(--bg-surface)", border: "1px solid var(--border-hair)" }}>
+      <div style={{ fontSize: "10px", letterSpacing: "0.16em", textTransform: "uppercase", color: "var(--text-faint)", fontWeight: 600, marginBottom: "4px" }}>
+        Blog traffic
+      </div>
+      <div style={{ fontSize: "11px", color: "var(--text-faint)", marginBottom: "10px" }}>
+        Raw pageviews for the whole blog (Blogger's own count — includes bot/crawler hits, and isn't broken down per post).
+      </div>
+      <div className="flex gap-6">
+        {counts.map((c) => (
+          <div key={c.label}>
+            <div className="font-mono" style={{ fontSize: "20px", color: "var(--text-primary)" }}>{c.count}</div>
+            <div style={{ fontSize: "11px", color: "var(--text-faint)" }}>{c.label}</div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function LabelsView({ labels, articles, ideas, newLabelName, setNewLabelName, addLabel, onSelect, onUpdateLabel, toast }: any) {
   return (
     <div>
-      <ViewHead eyebrow="Publication" title="Labels" desc="Every label is its own thread of curiosity. Pick one to generate ideas, or start a new thread below." />
+      <ViewHead
+        eyebrow="Overview"
+        title="Home"
+        desc="Autopilot status, blog traffic, and every label you're publishing under. Pick one to generate ideas, or start a new thread below."
+      />
+      <AutopilotPanel toast={toast} /><BlogStatsPanel />
       <div className="grid gap-5" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(240px, 1fr))" }}>
         {labels.map((l: Label) => (
           <LabelCard
@@ -1064,188 +1218,102 @@ function LabelCard({ label, published, inProgress, ideaCount, onSelect, onSave }
 }
 
 // ─── Strategy view ─────────────────────────────────────────────────────────
-function StrategyView({
-  label,
-  labels,
-  ideas,
-  loading,
-  onSwitchLabel,
-  onGenerate,
-  onPromote,
-  onDelete,
-  onChangeContentType,
-}: any) {
+function StrategyView({ label, labels, ideas, loading, onSwitchLabel, onGenerate, onPromote, onDelete, onChangeContentType, onBulkDelete, onBulkSetContentType }: any) {
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [bulkType, setBulkType] = useState("factual");
+
+  useEffect(() => { setSelected(new Set()); }, [label.id]);
+
   const sorted = [...ideas].sort((a, b) => {
     const aActive = a.status === "idea" ? 0 : 1;
     const bActive = b.status === "idea" ? 0 : 1;
     if (aActive !== bActive) return aActive - bActive;
     return (a.rank || 99) - (b.rank || 99);
   });
+
+  function toggle(id: string) {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      next.has(id) ? next.delete(id) : next.add(id);
+      return next;
+    });
+  }
+  const allSelected = sorted.length > 0 && sorted.every((i: Idea) => selected.has(i.id));
+  const toggleAll = () => setSelected(allSelected ? new Set() : new Set(sorted.map((i: Idea) => i.id)));
+
   return (
     <div>
-      <ViewHead
-        eyebrow="Step 1 — Content strategy"
-        title={label.name}
-        desc={label.description}
-      />
-      <div className="flex gap-2.5 items-center mb-8 flex-wrap">
-        <select
-          value={label.id}
-          onChange={(e) => onSwitchLabel(e.target.value)}
-          className="px-3 py-2"
-          style={{ fontSize: "13px", minWidth: "160px" }}
-        >
-          {labels.map((l: Label) => (
-            <option key={l.id} value={l.id}>
-              {l.name}
-            </option>
-          ))}
+      <ViewHead eyebrow="Step 1 — Content strategy" title={label.name} desc={label.description} />
+      <div className="flex gap-2.5 items-center mb-6 flex-wrap">
+        <select value={label.id} onChange={(e) => onSwitchLabel(e.target.value)} className="px-3 py-2" style={{ fontSize: "13px", minWidth: "160px" }}>
+          {labels.map((l: Label) => <option key={l.id} value={l.id}>{l.name}</option>)}
         </select>
-        <button
-          className="btn btn-spark"
-          disabled={loading}
-          onClick={onGenerate}
-        >
-          Generate ideas
-        </button>
+        <button className="btn btn-spark" disabled={loading} onClick={onGenerate}>Generate ideas</button>
       </div>
 
-      {loading && (
-        <Loading
-          text={`Sketching ideas that build on what's already published in ${label.name}...`}
-        />
-      )}
-      {!sorted.length && !loading && (
-        <EmptyState text="No ideas yet for this label. Generate a first batch." />
-      )}
-
-      <div
-        className="space-y-px"
-        style={{
-          borderTop: sorted.length ? "1px solid var(--border-hair)" : "none",
-        }}
-      >
-        {sorted.map((idea: Idea) => (
-          <div
-            key={idea.id}
-            className="py-5 animate-fade-in"
-            style={{ borderBottom: "1px solid var(--border-hair)" }}
+      {selected.size > 0 && (
+        <div className="flex items-center gap-2 mb-4 px-3 py-2 rounded-md flex-wrap" style={{ background: "var(--bg-raised)", border: "1px solid var(--border-hair)", fontSize: "12px" }}>
+          <span style={{ color: "var(--text-secondary)" }}>{selected.size} selected</span>
+          <select value={bulkType} onChange={(e) => setBulkType(e.target.value)} className="px-2 py-1" style={{ fontSize: "11px" }}>
+            {CONTENT_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
+          </select>
+          <button className="btn btn-ghost" style={{ fontSize: "11px", padding: "4px 10px" }} onClick={() => onBulkSetContentType(Array.from(selected), bulkType)}>
+            Set content type
+          </button>
+          <button
+            className="btn btn-ghost ml-auto"
+            style={{ fontSize: "11px", padding: "4px 10px", color: "var(--danger)", borderColor: "rgba(184,90,82,0.35)" }}
+            onClick={() => { onBulkDelete(Array.from(selected)); setSelected(new Set()); }}
           >
-            <div className="flex justify-between items-start gap-4 mb-2">
-              <div className="flex-1">
-                <div
-                  className="font-serif mb-1 leading-snug"
-                  style={{
-                    fontSize: "16.5px",
-                    fontWeight: 500,
-                    color: "var(--text-primary)",
-                  }}
-                >
-                  {idea.title}
+            Delete selected
+          </button>
+        </div>
+      )}
+
+      {loading && <Loading text={`Sketching ideas that build on what's already published in ${label.name}...`} />}
+      {!sorted.length && !loading && <EmptyState text="No ideas yet for this label. Generate a first batch." />}
+
+      <div className="space-y-px" style={{ borderTop: sorted.length ? "1px solid var(--border-hair)" : "none" }}>
+        {sorted.length > 0 && (
+          <label className="flex items-center gap-2 py-2" style={{ fontSize: "11px", color: "var(--text-faint)" }}>
+            <input type="checkbox" checked={allSelected} onChange={toggleAll} /> Select all
+          </label>
+        )}
+        {sorted.map((idea: Idea) => (
+          <div key={idea.id} className="py-5 animate-fade-in flex gap-3" style={{ borderBottom: "1px solid var(--border-hair)" }}>
+            <input type="checkbox" checked={selected.has(idea.id)} onChange={() => toggle(idea.id)} style={{ marginTop: "5px" }} />
+            <div className="flex-1">
+              <div className="flex justify-between items-start gap-4 mb-2">
+                <div className="flex-1">
+                  <div className="font-serif mb-1 leading-snug" style={{ fontSize: "16.5px", fontWeight: 500, color: "var(--text-primary)" }}>{idea.title}</div>
+                  <p style={{ fontSize: "13px", color: "var(--text-secondary)", lineHeight: "1.6" }}>{idea.main_question}</p>
                 </div>
-                <p
-                  style={{
-                    fontSize: "13px",
-                    color: "var(--text-secondary)",
-                    lineHeight: "1.6",
-                  }}
-                >
-                  {idea.main_question}
-                </p>
+                <div className="font-mono shrink-0" style={{ fontSize: "10px", letterSpacing: "0.1em", color: "var(--text-faint)", paddingTop: "3px" }}>#{idea.rank}</div>
               </div>
-              <div
-                className="font-mono shrink-0"
-                style={{
-                  fontSize: "10px",
-                  letterSpacing: "0.1em",
-                  color: "var(--text-faint)",
-                  paddingTop: "3px",
-                }}
-              >
-                #{idea.rank}
-              </div>
-            </div>
-
-            <p
-              style={{
-                fontSize: "12.5px",
-                color: "var(--text-faint)",
-                fontStyle: "italic",
-                marginBottom: "10px",
-              }}
-            >
-              {idea.hook_reason}
-            </p>
-
-            <div className="flex flex-wrap items-center gap-1.5 mb-3">
-              <div className="flex flex-wrap gap-1.5">
-                {(idea.seo_keywords || []).map((k: string) => (
-                  <span key={k} className="tag">
-                    {k}
-                  </span>
-                ))}
-                {idea.series_position && (
-                  <span
-                    className="tag"
-                    style={{
-                      color: "var(--accent)",
-                      borderColor: "var(--accent-dim)",
-                    }}
-                  >
-                    {idea.series_position}
-                  </span>
-                )}
+              <p style={{ fontSize: "12.5px", color: "var(--text-faint)", fontStyle: "italic", marginBottom: "10px" }}>{idea.hook_reason}</p>
+              <div className="flex flex-wrap gap-1.5 mb-3 items-center">
+                {(idea.seo_keywords || []).map((k: string) => <span key={k} className="tag">{k}</span>)}
+                {idea.series_position && <span className="tag" style={{ color: "var(--accent)", borderColor: "var(--accent-dim)" }}>{idea.series_position}</span>}
                 <span className="tag">curiosity {idea.curiosity_score}/10</span>
                 <span className="tag">seo {idea.seo_score}/10</span>
-                <span className={`status-pill ${STATUS_STYLES[idea.status]}`}>
-                  {idea.status}
-                </span>
+                <span className={`status-pill ${STATUS_STYLES[idea.status]}`}>{idea.status}</span>
+                <select
+                  value={idea.content_type || "factual"}
+                  onChange={(e) => onChangeContentType(idea.id, e.target.value)}
+                  className="px-2 py-1"
+                  style={{ fontSize: "11px", marginLeft: "auto" }}
+                >
+                  {CONTENT_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
+                </select>
               </div>
-              <select
-                value={idea.content_type || "factual"}
-                onChange={(e) => onChangeContentType(idea.id, e.target.value)}
-                onClick={(e) => e.stopPropagation()}
-                className="px-2 py-1"
-                style={{ fontSize: "11px", marginLeft: "auto" }}
-              >
-                {CONTENT_TYPES.map((t) => (
-                  <option key={t} value={t}>
-                    {t}
-                  </option>
-                ))}
-              </select>
-            </div>
-
-            <div className="flex gap-2">
-              {idea.status === "idea" ? (
-                <button
-                  className="btn btn-spark"
-                  style={{ fontSize: "12px", padding: "5px 12px" }}
-                  onClick={() => onPromote(idea.id)}
-                >
-                  Draft this article
-                </button>
-              ) : (
-                <button
-                  className="btn btn-ghost"
-                  style={{ fontSize: "12px", padding: "5px 12px" }}
-                  onClick={() => onPromote(idea.id)}
-                >
-                  Open in editor
-                </button>
-              )}
-              <button
-                className="btn btn-ghost"
-                style={{
-                  fontSize: "12px",
-                  padding: "5px 12px",
-                  color: "var(--danger)",
-                  borderColor: "rgba(184,90,82,0.35)",
-                }}
-                onClick={() => onDelete(idea.id)}
-              >
-                Delete
-              </button>
+              <div className="flex gap-2">
+                {idea.status === "idea" ? (
+                  <button className="btn btn-spark" style={{ fontSize: "12px", padding: "5px 12px" }} onClick={() => onPromote(idea.id)}>Draft this article</button>
+                ) : (
+                  <button className="btn btn-ghost" style={{ fontSize: "12px", padding: "5px 12px" }} onClick={() => onPromote(idea.id)}>Open in editor</button>
+                )}
+                <button className="btn btn-ghost" style={{ fontSize: "12px", padding: "5px 12px", color: "var(--danger)", borderColor: "rgba(184,90,82,0.35)" }} onClick={() => onDelete(idea.id)}>Delete</button>
+              </div>
             </div>
           </div>
         ))}
@@ -1254,103 +1322,176 @@ function StrategyView({
   );
 }
 
-// ─── Pipeline view ─────────────────────────────────────────────────────────
-function PipelineView({
-  ideas,
-  articles,
-  labels,
-  onOpenArticle,
-  onOpenIdea,
-}: any) {
-  const columns: PipelineStatus[] = [
-    "idea",
-    "drafting",
-    "published",
-  ];
+function truncate(s: string, max: number): string {
+  return s.length > max ? s.slice(0, max).trimEnd() + "…" : s;
+}
+
+function CalendarView({ articles, labels, toast, onRefresh, onOpen }: any) {
+  const [monthOffset, setMonthOffset] = useState(0);
+  const now = new Date();
+  const viewDate = new Date(now.getFullYear(), now.getMonth() + monthOffset, 1);
+  const year = viewDate.getFullYear();
+  const month = viewDate.getMonth();
+  const firstDay = new Date(year, month, 1).getDay();
+  const daysInMonth = new Date(year, month + 1, 0).getDate();
+
+  const byDay: Record<number, Article[]> = {};
+  articles.forEach((a: Article) => {
+    if (!a.published_at) return;
+    const d = new Date(a.published_at);
+    if (d.getFullYear() === year && d.getMonth() === month) {
+      (byDay[d.getDate()] ||= []).push(a);
+    }
+  });
+
+  const pendingReview = articles.filter((a: Article) => a.html && a.status !== "published");
+  const cells: (number | null)[] = [...Array(firstDay).fill(null), ...Array.from({ length: daysInMonth }, (_, i) => i + 1)];
+  const monthLabel = viewDate.toLocaleString("default", { month: "long", year: "numeric" });
+
+  const [syncing, setSyncing] = useState(false);
+  async function sync() {
+    setSyncing(true);
+    try {
+      const result = await api<{ updated: number; errors: string[] }>("/api/blogger/sync", { method: "POST" });
+      await onRefresh();
+      toast(result.updated ? `Synced — ${result.updated} article(s) caught up to Blogger's real status.` : "Already up to date.");
+      if (result.errors?.length) toast(`${result.errors.length} article(s) failed to sync.`, "error");
+    } catch (e: any) {
+      toast(e.message, "error");
+    }
+    setSyncing(false);
+  }
+
   return (
     <div>
-      <ViewHead
-        eyebrow="Workflow"
-        title="Pipeline"
-        desc="Everything moves left to right. Click a card to jump into it."
-      />
-      <div
-        className="grid gap-4"
-        style={{ gridTemplateColumns: "repeat(5, 1fr)" }}
-      >
-        {columns.map((col) => {
-          const ideaCards = ideas.filter(
-            (i: Idea) =>
-              i.status === col &&
-              !articles.find((a: Article) => a.idea_id === i.id),
-          );
-          const articleCards = articles.filter(
-            (a: Article) => a.status === col,
-          );
+      <ViewHead eyebrow="Cadence" title="Content calendar" desc="Published dates per label, at a glance. Click a post to open it." />
+      <div className="flex items-center justify-between mb-5">
+        <button className="btn btn-ghost" style={{ fontSize: "12px", padding: "5px 12px" }} onClick={() => setMonthOffset((m) => m - 1)}>← Prev</button>
+        <div className="font-serif" style={{ fontSize: "18px", color: "var(--text-primary)" }}>{monthLabel}</div>
+        <div className="flex gap-2">
+          <button className="btn btn-ghost" style={{ fontSize: "12px", padding: "5px 12px" }} disabled={syncing} onClick={sync}>
+            {syncing ? "Syncing…" : "Sync from Blogger"}
+          </button>
+          <button className="btn btn-ghost" style={{ fontSize: "12px", padding: "5px 12px" }} onClick={() => setMonthOffset((m) => m + 1)}>Next →</button>
+        </div>
+      </div>
+
+      <div className="grid gap-1.5 mb-2" style={{ gridTemplateColumns: "repeat(7, 1fr)" }}>
+        {["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].map((d) => (
+          <div key={d} style={{ fontSize: "10px", letterSpacing: "0.1em", textTransform: "uppercase", color: "var(--text-faint)", textAlign: "center", paddingBottom: "4px" }}>{d}</div>
+        ))}
+      </div>
+
+      <div className="grid gap-1.5" style={{ gridTemplateColumns: "repeat(7, 1fr)" }}>
+        {cells.map((day, i) => {
+          const items = day ? byDay[day] || [] : [];
+          const isToday = !!day && year === now.getFullYear() && month === now.getMonth() && day === now.getDate();
           return (
             <div
-              key={col}
-              className="rounded-[10px] p-3.5"
+              key={i}
+              className="rounded-md p-1.5"
               style={{
-                background: "var(--bg-surface)",
-                border: "1px solid var(--border-hair)",
-                minHeight: "140px",
+                minHeight: "78px",
+                minWidth: 0,        // <- the actual fix: stop this grid item from sizing to its content
+                overflow: "hidden", // <- belt-and-suspenders against any remaining overflow
+                background: day ? "var(--bg-surface)" : "transparent",
+                border: day ? "1px solid" : "none",
+                borderColor: isToday ? "var(--accent)" : "var(--border-hair)",
               }}
             >
-              {/* Column header */}
-              <div
-                className="flex justify-between items-center mb-3"
-                style={{
-                  borderBottom: "1px solid var(--border-hair)",
-                  paddingBottom: "8px",
-                }}
-              >
-                <span
-                  style={{
-                    fontSize: "9.5px",
-                    letterSpacing: "0.16em",
-                    textTransform: "uppercase",
-                    color: "var(--text-faint)",
-                    fontWeight: 600,
-                  }}
-                >
-                  {col}
-                </span>
-                <span
-                  className="font-mono"
-                  style={{ fontSize: "10px", color: "var(--text-faint)" }}
-                >
-                  {ideaCards.length + articleCards.length}
-                </span>
+              {day && (
+                <>
+                  <div style={{ fontSize: "10.5px", color: isToday ? "var(--accent)" : "var(--text-faint)", marginBottom: "3px" }}>{day}</div>
+                  {items.slice(0, 3).map((a: Article) => {
+                    const label = labels.find((l: Label) => l.id === a.label_id);
+                    return (
+                      <div
+                        key={a.id}
+                        title={a.title}
+                        onClick={() => onOpen(a.id)}
+                        className="cursor-pointer hover:opacity-75 transition-opacity"
+                        style={{
+                          fontSize: "9.5px",
+                          color: "var(--text-secondary)",
+                          background: "var(--bg-raised)",
+                          borderRadius: "3px",
+                          padding: "1px 4px",
+                          marginBottom: "2px",
+                          overflow: "hidden",
+                          textOverflow: "ellipsis",
+                          whiteSpace: "nowrap",
+                        }}
+                      >
+                        {label && <span style={{ color: "var(--accent)" }}>{label.name}: </span>}
+                        {truncate(a.title, 16)}
+                      </div>
+                    );
+                  })}
+                  {items.length > 3 && <div style={{ fontSize: "9px", color: "var(--text-faint)" }}>+{items.length - 3} more</div>}
+                </>
+              )}
+            </div>
+          );
+        })}
+      </div>
+
+      {!!pendingReview.length && (
+        <div className="mt-8">
+          <div style={{ fontSize: "10px", letterSpacing: "0.16em", textTransform: "uppercase", color: "var(--text-faint)", marginBottom: "10px" }}>
+            Not yet scheduled — waiting in the Approval Queue
+          </div>
+          <div className="flex flex-wrap gap-2">
+            {pendingReview.map((a: Article) => (
+              <span key={a.id} className="tag cursor-pointer" onClick={() => onOpen(a.id)}>{a.title}</span>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Pipeline view ─────────────────────────────────────────────────────────
+function PipelineView({ ideas, articles, labels, onOpenArticle, onOpenIdea }: any) {
+  const columns: PipelineStatus[] = ["idea", "drafting", "published"];
+  const CARD_LIMIT = 6;
+
+  return (
+    <div>
+      <ViewHead eyebrow="Workflow" title="Pipeline" desc="Everything moves left to right. Click a card to jump into it." />
+      <div className="grid gap-4" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))" }}>
+        {columns.map((col) => {
+          const ideaCards = ideas.filter((i: Idea) => i.status === col && !articles.find((a: Article) => a.idea_id === i.id));
+          const articleCards = articles.filter((a: Article) => a.status === col);
+          const combined = [
+            ...ideaCards.map((i: Idea) => ({ kind: "idea" as const, data: i })),
+            ...articleCards.map((a: Article) => ({ kind: "article" as const, data: a })),
+          ];
+          const visible = combined.slice(0, CARD_LIMIT);
+          const overflow = combined.length - visible.length;
+
+          return (
+            <div key={col} className="rounded-[10px] p-3.5" style={{ background: "var(--bg-surface)", border: "1px solid var(--border-hair)", minHeight: "140px" }}>
+              <div className="flex justify-between items-center mb-3" style={{ borderBottom: "1px solid var(--border-hair)", paddingBottom: "8px" }}>
+                <span style={{ fontSize: "9.5px", letterSpacing: "0.16em", textTransform: "uppercase", color: "var(--text-faint)", fontWeight: 600 }}>{col}</span>
+                <span className="font-mono" style={{ fontSize: "10px", color: "var(--text-faint)" }}>{combined.length}</span>
               </div>
 
-              {ideaCards.map((c: Idea) => (
+              {visible.map((c) => (
                 <PipelineCard
-                  key={c.id}
-                  title={c.title}
-                  label={labels.find((l: Label) => l.id === c.label_id)?.name}
-                  onClick={() => onOpenIdea(c)}
+                  key={c.data.id}
+                  title={c.data.title}
+                  label={labels.find((l: Label) => l.id === c.data.label_id)?.name}
+                  onClick={() => (c.kind === "idea" ? onOpenIdea(c.data) : onOpenArticle(c.data.id))}
                 />
               ))}
-              {articleCards.map((c: Article) => (
-                <PipelineCard
-                  key={c.id}
-                  title={c.title}
-                  label={labels.find((l: Label) => l.id === c.label_id)?.name}
-                  onClick={() => onOpenArticle(c.id)}
-                />
-              ))}
-              {!ideaCards.length && !articleCards.length && (
-                <div
-                  style={{
-                    fontSize: "11px",
-                    color: "var(--text-faint)",
-                    padding: "4px 0",
-                  }}
-                >
-                  Empty
+
+              {overflow > 0 && (
+                <div style={{ fontSize: "11px", color: "var(--text-faint)", padding: "6px 2px" }}>
+                  +{overflow} more — see Search or Content strategy
                 </div>
               )}
+              {!combined.length && <div style={{ fontSize: "11px", color: "var(--text-faint)", padding: "4px 0" }}>Empty</div>}
             </div>
           );
         })}
@@ -2435,51 +2576,29 @@ function AdvancedSettings({
         >
           {/* SEO */}
           <div>
-            <div
-              style={{
-                fontSize: "9.5px",
-                letterSpacing: "0.18em",
-                textTransform: "uppercase",
-                color: "var(--text-faint)",
-                marginBottom: "10px",
-                fontWeight: 600,
-              }}
-            >
+            <div style={{ fontSize: "9.5px", letterSpacing: "0.18em", textTransform: "uppercase", color: "var(--text-faint)", marginBottom: "10px", fontWeight: 600 }}>
               SEO
             </div>
-            {seo ? (
+            {seo?.meta_description ? (
               <>
-                <Kv k="Primary keyword" v={seo.primary_keyword} />
-                <Kv
-                  k="Secondary keywords"
-                  v={(seo.secondary_keywords || []).join(", ")}
-                />
-                <Kv k="SEO title" v={seo.seo_title} />
                 <Kv k="Meta description" v={seo.meta_description} />
-                {seo && (
-                  <div className="mt-3">
-                    <SerpPreview
-                      title={seo.seo_title || article.title}
-                      url={`${BLOG_URL}/${article.permalink || ""}`}
-                      description={seo.meta_description || article.tldr || ""}
-                    />
-                  </div>
-                )}
-                <button
-                  className="btn btn-ghost mt-1"
-                  style={{ fontSize: "11px", padding: "4px 9px" }}
-                  disabled={loading === "meta"}
-                  onClick={onGenerateMetaDescription}
-                >
-                  {loading === "meta" ? "Generating…" : "Regenerate meta description"}
-                </button>
+                <SerpPreview
+                  title={article.title}
+                  url={`yourblog.blogspot.com/…/${article.permalink || ""}`}
+                  description={seo.meta_description}
+                />
               </>
             ) : (
-              <p style={{ color: "var(--text-faint)" }}>
-                SEO metadata is generated automatically once you run the
-                pipeline.
-              </p>
+              <p style={{ color: "var(--text-faint)" }}>Not generated yet.</p>
             )}
+            <button
+              className="btn btn-ghost mt-3"
+              style={{ fontSize: "11px", padding: "4px 9px" }}
+              disabled={loading === "meta"}
+              onClick={onGenerateMetaDescription}
+            >
+              {loading === "meta" ? "Generating…" : "Regenerate meta description"}
+            </button>
           </div>
 
           {/* Blogger */}
