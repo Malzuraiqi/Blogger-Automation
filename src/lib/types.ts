@@ -23,6 +23,7 @@ export interface Idea {
   audience_score: number | null;
   rank: number | null;
   status: PipelineStatus;
+  content_type: string | null;
 }
 
 export interface ArticleSection {
@@ -45,13 +46,14 @@ export interface Article {
   status: PipelineStatus;
   updated_at: string;
   // Set only when "Generate Article" (re)writes content — compared against
-  // updated_at to flag "edited since last generation" in the UI.
   content_generated_at: string | null;
   // Blogger pipeline additions
   html: string | null;
   blogger_labels: string[];
   published_url: string | null;
   links_inserted: boolean;
+  permalink: string | null;
+  content_type: string | null;
 }
 
 export interface ArticleSeo {
@@ -85,6 +87,18 @@ export interface ArticleLink {
   placement_note: string;
 }
 
+export interface ArticleVersion {
+  id: string;
+  article_id: string;
+  title: string;
+  subtitle: string | null;
+  tldr: string | null;
+  sections: ArticleSection[];
+  conclusion: string | null;
+  reason: string;
+  created_at: string;
+}
+
 export interface BloggerCredentials {
   id: string;
   access_token: string;
@@ -92,4 +106,12 @@ export interface BloggerCredentials {
   expires_at: string | null;
   blog_id: string | null;
   blog_url: string | null;
+}
+
+export interface StyleProfile {
+  id: string;
+  profile_text: string;
+  sample_count: number;
+  sample_word_count: number;
+  updated_at: string;
 }

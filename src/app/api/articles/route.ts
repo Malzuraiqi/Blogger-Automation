@@ -32,7 +32,7 @@ export async function POST(req: NextRequest) {
 
   const { data, error } = await sb
     .from("articles")
-    .insert({ idea_id: ideaId, label_id: idea.label_id, title: idea.title, status: "drafting" })
+    .insert({ idea_id: ideaId, label_id: idea.label_id, title: idea.title, status: "drafting", content_type: idea.content_type || "factual" })
     .select()
     .single();
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
@@ -49,8 +49,33 @@ export async function PATCH(req: NextRequest) {
   const body = await req.json();
   if (!body.id) return NextResponse.json({ error: "id is required" }, { status: 400 });
   const { id, ...updates } = body;
+
+  // Only content-touching PATCHes need a snapshot — a bare status change
+  // (e.g. moving the pipeline stage) doesn't overwrite anything worth
+  // preserving.
+  const touchesContent = ["title", "subtitle", "tldr", "sections", "conclusion"].some((k) => k in updates);
+  if (touchesContent) {
+    const { data: current } = await sb
+      .from("articles")
+      .select("title, subtitle, tldr, sections, conclusion")
+      .eq("id", id)
+      .single();
+    if (current) {
+      await sb.from("article_versions").insert({
+        article_id: id,
+        title: current.title,
+        subtitle: current.subtitle,
+        tldr: current.tldr,
+        sections: current.sections,
+        conclusion: current.conclusion,
+        reason: "manual-edit",
+      });
+    }
+  }
+
   updates.updated_at = new Date().toISOString();
   const { data, error } = await sb.from("articles").update(updates).eq("id", id).select().single();
+
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
   return NextResponse.json(data);
 }

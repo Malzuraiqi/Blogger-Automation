@@ -12,7 +12,10 @@ import type {
   PipelineStatus,
 } from "@/lib/types";
 
-type View = "labels" | "strategy" | "pipeline" | "editor" | "search";
+const CONTENT_TYPES = ["factual", "opinion", "research", "listicle", "narrative"] as const;
+const BLOG_URL = "https://synapsesnaps.blogspot.com";
+
+type View = "labels" | "strategy" | "pipeline" | "editor" | "queue" | "search" | "style";
 type EditorTab = "images" | "links";
 type LoadingKey =
   | "ideas"
@@ -22,6 +25,7 @@ type LoadingKey =
   | "links-internal"
   | "links-external"
   | "html"
+  | "meta"
   | "publish"
   | "blogs"
   | "all";
@@ -40,6 +44,12 @@ type Health = {
   missingOptional: string[];
 };
 
+type Toast = {
+  id: string;
+  message: string;
+  kind: "success" | "error" | "info";
+};
+
 // Status pill class mapping — muted, desaturated, no heavy fills
 const STATUS_STYLES: Record<PipelineStatus, string> = {
   idea: "status-idea",
@@ -48,6 +58,9 @@ const STATUS_STYLES: Record<PipelineStatus, string> = {
   editing: "status-editing",
   published: "status-published",
 };
+
+type StepStatus = "pending" | "running" | "done" | "error";
+
 
 async function api<T = any>(url: string, options?: RequestInit): Promise<T> {
   const res = await fetch(url, {
@@ -136,7 +149,6 @@ export default function Studio() {
   const [editorTab, setEditorTab] = useState<EditorTab>("images");
   const [loading, setLoading] = useState<LoadingKey | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [copyStatus, setCopyStatus] = useState<string | null>(null);
   const [search, setSearch] = useState("");
   const [newLabelName, setNewLabelName] = useState("");
   const [advancedOpen, setAdvancedOpen] = useState(false);
@@ -146,6 +158,16 @@ export default function Studio() {
   const [health, setHealth] = useState<Health | null>(null);
   const [healthDismissed, setHealthDismissed] = useState(false);
   const [draft, setDraft] = useState<ArticleDraft | null>(null);
+  const [pipelineProgress, setPipelineProgress] = useState<
+    Record<string, StepStatus>
+  >({});
+  const [toasts, setToasts] = useState<Toast[]>([]);
+
+  function toast(message: string, kind: Toast["kind"] = "success", duration = 3000) {
+    const id = Math.random().toString(36).slice(2);
+    setToasts((t) => [...t, { id, message, kind }]);
+    setTimeout(() => setToasts((t) => t.filter((x) => x.id !== id)), duration);
+  }
 
   const refreshAll = useCallback(async () => {
     const [l, i, a] = await Promise.all([
@@ -167,7 +189,7 @@ export default function Studio() {
     // Surface the redirect result from /api/blogger/callback, if any.
     const params = new URLSearchParams(window.location.search);
     if (params.get("blogger_connected"))
-      setCopyStatus("Google account connected.");
+      toast("Google account connected.", "info");
     if (params.get("blogger_error"))
       setError(`Blogger connection failed: ${params.get("blogger_error")}`);
     if (params.toString())
@@ -197,6 +219,7 @@ export default function Studio() {
       });
       setNewLabelName("");
       await refreshAll();
+      toast("Label added.");
     } catch (e: any) {
       setError(e.message);
     }
@@ -217,11 +240,28 @@ export default function Studio() {
     setLoading(null);
   }
 
+  async function generateMetaDescription(articleId: string) {
+    setLoading("meta");
+    setError(null);
+    try {
+      await api("/api/meta-description", {
+        method: "POST",
+        body: JSON.stringify({ articleId }),
+      });
+      await refreshAll();
+      toast("Meta description updated.");
+    } catch (e: any) {
+      setError(e.message);
+    }
+    setLoading(null);
+  }
+
   async function deleteIdea(ideaId: string) {
     if (!window.confirm("Delete this idea? This can't be undone.")) return;
     try {
       await api(`/api/ideas?id=${ideaId}`, { method: "DELETE" });
       await refreshAll();
+      toast("Idea deleted.");
     } catch (e: any) {
       setError(e.message);
     }
@@ -238,6 +278,7 @@ export default function Studio() {
       await api(`/api/articles?id=${articleId}`, { method: "DELETE" });
       if (activeArticleId === articleId) setActiveArticleId(null);
       await refreshAll();
+      toast("Article deleted.");
     } catch (e: any) {
       setError(e.message);
     }
@@ -259,7 +300,7 @@ export default function Studio() {
 
   // Generic runner for the linear pipeline steps below: sets the loading
   // key, calls the endpoint, refreshes, and surfaces errors consistently.
-  async function runStep(key: LoadingKey, url: string, body: any) {
+  async function runStep(key: LoadingKey, url: string, body: any, successMessage?: string) {
     setLoading(key);
     setError(null);
     try {
@@ -268,6 +309,7 @@ export default function Studio() {
         body: JSON.stringify(body),
       });
       await refreshAll();
+      if (successMessage) toast(successMessage);
       return result;
     } catch (e: any) {
       setError(e.message);
@@ -278,7 +320,7 @@ export default function Studio() {
   }
 
   const generateArticle = (articleId: string) =>
-    runStep("article", "/api/generate/article", { articleId });
+    runStep("article", "/api/generate/article", { articleId }, "Article generated.");
 
   // Unlike the other steps, "Generate Images" can succeed (200) while still
   // reporting per-image generation failures (e.g. no IMAGE_PROVIDER
@@ -305,8 +347,7 @@ export default function Studio() {
           `Some images failed to generate: ${result.generationErrors.join(" | ")}`,
         );
       } else {
-        setCopyStatus("Images generated.");
-        setTimeout(() => setCopyStatus(null), 3000);
+        toast("Images generated.");
       }
     } catch (e: any) {
       setError(e.message);
@@ -325,21 +366,23 @@ export default function Studio() {
         body: JSON.stringify({ imageId }),
       });
       await refreshAll();
+      toast("Image regenerated.");
     } catch (e: any) {
       setError(e.message);
     }
   }
 
   const generateCaptions = (articleId: string) =>
-    runStep("captions", "/api/generate/captions", { articleId });
+    runStep("captions", "/api/generate/captions", { articleId }, "Captions updated.");
   const insertLinks = (articleId: string, type: "internal" | "external") =>
     runStep(
       type === "internal" ? "links-internal" : "links-external",
       "/api/generate/links",
       { articleId, type },
+      type === "internal" ? "Internal links inserted." : "External links inserted.",
     );
   const generateHtml = (articleId: string) =>
-    runStep("html", "/api/generate/html", { articleId });
+    runStep("html", "/api/generate/html", { articleId }, "HTML generated.");
 
   async function saveArticleEdits() {
     if (!activeArticle || !draft) return;
@@ -356,8 +399,7 @@ export default function Studio() {
         }),
       });
       await refreshAll();
-      setCopyStatus("Changes saved.");
-      setTimeout(() => setCopyStatus(null), 3000);
+      toast("Changes saved.");
     } catch (e: any) {
       setError(e.message);
     }
@@ -381,84 +423,66 @@ export default function Studio() {
     setLoading("all");
     setError(null);
     const warnings: string[] = [];
+    const stepKeys = ["article", "images", "captions", "internal", "external", "html"];
+    setPipelineProgress(Object.fromEntries(stepKeys.map((k) => [k, "pending"])) as any);
 
-    async function step(label: string, fn: () => Promise<void>) {
+    async function step(key: string, label: string, fn: () => Promise<void>) {
+      setPipelineProgress((p) => ({ ...p, [key]: "running" }));
       try {
         await fn();
+        setPipelineProgress((p) => ({ ...p, [key]: "done" }));
       } catch (e: any) {
         warnings.push(`${label}: ${e.message}`);
+        setPipelineProgress((p) => ({ ...p, [key]: "error" }));
       }
     }
 
     const current = articles.find((a) => a.id === articleId);
     if (!current?.sections?.length) {
-      await step("Generate Article", async () => {
-        await api("/api/generate/article", {
-          method: "POST",
-          body: JSON.stringify({ articleId }),
-        });
+      await step("article", "Generate Article", async () => {
+        await api("/api/generate/article", { method: "POST", body: JSON.stringify({ articleId }) });
         await refreshAll();
       });
+    } else {
+      setPipelineProgress((p) => ({ ...p, article: "done" }));
     }
 
-    await step("Generate Images", async () => {
-      const result = await api<{
-        provider: string | null;
-        generationErrors: string[];
-      }>("/api/generate/images", {
-        method: "POST",
-        body: JSON.stringify({ articleId }),
-      });
+    await step("images", "Generate Images", async () => {
+      const result = await api<{ provider: string | null; generationErrors: string[] }>(
+        "/api/generate/images",
+        { method: "POST", body: JSON.stringify({ articleId }) }
+      );
       if (!result.provider) {
-        warnings.push(
-          'Generate Images: no IMAGE_PROVIDER configured — images are "IMAGE_URL_N" placeholders in the HTML.',
-        );
+        warnings.push('Generate Images: no IMAGE_PROVIDER configured — images are "IMAGE_URL_N" placeholders in the HTML.');
       } else if (result.generationErrors?.length) {
-        warnings.push(
-          `Generate Images: ${result.generationErrors.join(" | ")}`,
-        );
+        warnings.push(`Generate Images: ${result.generationErrors.join(" | ")}`);
       }
       await refreshAll();
     });
 
-    await step("Generate Captions", async () => {
-      await api("/api/generate/captions", {
-        method: "POST",
-        body: JSON.stringify({ articleId }),
-      });
+    await step("captions", "Generate Captions", async () => {
+      await api("/api/generate/captions", { method: "POST", body: JSON.stringify({ articleId }) });
       await refreshAll();
     });
 
-    await step("Insert Internal Links", async () => {
-      await api("/api/generate/links", {
-        method: "POST",
-        body: JSON.stringify({ articleId, type: "internal" }),
-      });
+    await step("internal", "Insert Internal Links", async () => {
+      await api("/api/generate/links", { method: "POST", body: JSON.stringify({ articleId, type: "internal" }) });
     });
 
-    await step("Insert External Links", async () => {
-      await api("/api/generate/links", {
-        method: "POST",
-        body: JSON.stringify({ articleId, type: "external" }),
-      });
+    await step("external", "Insert External Links", async () => {
+      await api("/api/generate/links", { method: "POST", body: JSON.stringify({ articleId, type: "external" }) });
       await refreshAll();
     });
 
-    await step("Generate HTML", async () => {
-      await api("/api/generate/html", {
-        method: "POST",
-        body: JSON.stringify({ articleId }),
-      });
+    await step("html", "Generate HTML", async () => {
+      await api("/api/generate/html", { method: "POST", body: JSON.stringify({ articleId }) });
       await refreshAll();
     });
 
     if (warnings.length) {
-      setError(
-        `Pipeline finished with issues:\n${warnings.map((w) => `• ${w}`).join("\n")}`,
-      );
+      setError(`Pipeline finished with issues:\n${warnings.map((w) => `• ${w}`).join("\n")}`);
     } else {
-      setCopyStatus("Full pipeline complete — ready to Copy for Blogger.");
-      setTimeout(() => setCopyStatus(null), 4000);
+      toast("Full pipeline complete — ready to Copy for Blogger.");
     }
     setLoading(null);
   }
@@ -478,8 +502,7 @@ export default function Studio() {
     }
     try {
       await navigator.clipboard.writeText(article.html);
-      setCopyStatus("Copied! Paste directly into Blogger's HTML editor.");
-      setTimeout(() => setCopyStatus(null), 4000);
+      toast("Copied! Paste directly into Blogger's HTML editor.");
     } catch {
       // Clipboard API can be blocked in some contexts — fall back to a
       // manual copy via a temporary textarea.
@@ -489,8 +512,7 @@ export default function Studio() {
       ta.select();
       document.execCommand("copy");
       document.body.removeChild(ta);
-      setCopyStatus("Copied! Paste directly into Blogger's HTML editor.");
-      setTimeout(() => setCopyStatus(null), 4000);
+      toast("Copied! Paste directly into Blogger's HTML editor.");
     }
   }
 
@@ -520,8 +542,7 @@ export default function Studio() {
         method: "POST",
         body: JSON.stringify({ blogId, blogUrl: blog?.url }),
       });
-      setCopyStatus(`Publishing target set to ${blog?.name || blogId}.`);
-      setTimeout(() => setCopyStatus(null), 4000);
+      toast(`Publishing target set to ${blog?.name || blogId}.`);
     } catch (e: any) {
       setError(e.message);
     }
@@ -539,11 +560,32 @@ export default function Studio() {
         body: JSON.stringify({ articleId, mode }),
       });
       await refreshAll();
-      setCopyStatus(`Published: ${result.url}`);
+      toast(`Published: ${result.url}`);
     } catch (e: any) {
       setError(e.message);
     }
     setLoading(null);
+  }
+
+  async function updateLabel(id: string, updates: Partial<Label>) {
+    try {
+      await api("/api/labels", { method: "PATCH", body: JSON.stringify({ id, ...updates }) });
+      await refreshAll();
+    } catch (e: any) {
+      setError(e.message);
+    }
+  }
+
+  async function updateIdeaContentType(ideaId: string, contentType: string) {
+    try {
+      await api("/api/ideas", {
+        method: "PATCH",
+        body: JSON.stringify({ id: ideaId, content_type: contentType }),
+      });
+      await refreshAll();
+    } catch (e: any) {
+      setError(e.message);
+    }
   }
 
   return (
@@ -571,7 +613,6 @@ export default function Studio() {
             <span className="whitespace-pre-line leading-relaxed">{error}</span>
           </Notice>
         )}
-        {copyStatus && <Notice kind="ok">{copyStatus}</Notice>}
 
         {/* ── Views ──────────────────────────────────────────────────── */}
         {view === "labels" && (
@@ -586,6 +627,7 @@ export default function Studio() {
               setActiveLabelId(id);
               setView("strategy");
             }}
+            onUpdateLabel={updateLabel}
           />
         )}
 
@@ -599,6 +641,7 @@ export default function Studio() {
             onGenerate={() => generateIdeas(activeLabel.id)}
             onPromote={promoteToDraft}
             onDelete={deleteIdea}
+            onChangeContentType={updateIdeaContentType}
           />
         )}
 
@@ -658,12 +701,31 @@ export default function Studio() {
             onSaveEdits={saveArticleEdits}
             onDiscardEdits={discardArticleEdits}
             onDeleteArticle={() => deleteArticle(activeArticle.id)}
+            pipelineProgress={pipelineProgress}
+            toast={toast}
+            onRefresh={refreshAll}
+            onGenerateMetaDescription={() => generateMetaDescription(activeArticle.id)}
           />
         )}
         {view === "editor" && !activeArticle && (
           <div className="empty-state">
             No article selected. Draft one from Content strategy first.
           </div>
+        )}
+
+        {view === "style" && <StyleView toast={toast} />}
+
+        {view === "queue" && (
+          <ApprovalQueueView
+            articles={articles}
+            labels={labels}
+            loading={loading}
+            onOpen={(id: string) => {
+              setActiveArticleId(id);
+              setView("editor");
+            }}
+            onPublish={(id: string, mode: "draft" | "publish") => publishToBlogger(id, mode)}
+          />
         )}
 
         {view === "search" && (
@@ -680,6 +742,49 @@ export default function Studio() {
           />
         )}
       </main>
+      <ToastStack toasts={toasts} />
+    </div>
+  );
+}
+
+function ToastStack({ toasts }: { toasts: Toast[] }) {
+  return (
+    <div
+      className="fixed z-50 flex flex-col gap-2 items-end"
+      style={{ bottom: "20px", right: "20px", pointerEvents: "none" }}
+    >
+      {toasts.map((t) => (
+        <div
+          key={t.id}
+          className="animate-fade-in px-4 py-2.5 rounded-lg text-xs"
+          style={{
+            background:
+              t.kind === "error"
+                ? "var(--ember-bg)"
+                : t.kind === "info"
+                  ? "var(--bg-raised)"
+                  : "var(--sage-bg)",
+            color:
+              t.kind === "error"
+                ? "var(--ember)"
+                : t.kind === "info"
+                  ? "var(--text-secondary)"
+                  : "var(--sage)",
+            border: "1px solid",
+            borderColor:
+              t.kind === "error"
+                ? "rgba(196,154,92,0.3)"
+                : t.kind === "info"
+                  ? "var(--border-hair)"
+                  : "rgba(122,158,130,0.3)",
+            boxShadow: "0 4px 16px rgba(0,0,0,0.25)",
+            maxWidth: "320px",
+            pointerEvents: "auto",
+          }}
+        >
+          {t.message}
+        </div>
+      ))}
     </div>
   );
 }
@@ -739,6 +844,8 @@ function Rail({ view, setView, labels, ideas, articles }: any) {
     },
     { id: "pipeline", label: "Pipeline", count: ideas.length },
     { id: "editor", label: "Editor", count: articles.length },
+    { id: "queue", label: "Approval queue", count: articles.filter((a: Article) => a.html && a.status !== "published").length },
+    { id: "style", label: "Style", count: null },
     { id: "search", label: "Search", count: null },
   ];
 
@@ -876,92 +983,22 @@ function Rail({ view, setView, labels, ideas, articles }: any) {
 }
 
 // ─── Labels view ───────────────────────────────────────────────────────────
-function LabelsView({
-  labels,
-  articles,
-  ideas,
-  newLabelName,
-  setNewLabelName,
-  addLabel,
-  onSelect,
-}: any) {
+function LabelsView({ labels, articles, ideas, newLabelName, setNewLabelName, addLabel, onSelect, onUpdateLabel }: any) {
   return (
     <div>
-      <ViewHead
-        eyebrow="Publication"
-        title="Labels"
-        desc="Every label is its own thread of curiosity. Pick one to generate ideas, or start a new thread below."
-      />
-      <div
-        className="grid gap-5"
-        style={{ gridTemplateColumns: "repeat(auto-fill, minmax(240px, 1fr))" }}
-      >
-        {labels.map((l: Label) => {
-          const published = articles.filter(
-            (a: Article) => a.label_id === l.id && a.status === "published",
-          ).length;
-          const inProgress = articles.filter(
-            (a: Article) => a.label_id === l.id && a.status !== "published",
-          ).length;
-          const ideaCount = ideas.filter(
-            (i: Idea) => i.label_id === l.id && i.status === "idea",
-          ).length;
-          return (
-            <div
-              key={l.id}
-              className="card cursor-pointer animate-fade-in"
-              onClick={() => onSelect(l.id)}
-              style={{ padding: "1.5rem 1.75rem" }}
-            >
-              <h3
-                className="font-serif mb-2 leading-snug"
-                style={{
-                  fontSize: "18px",
-                  fontWeight: 500,
-                  color: "var(--text-primary)",
-                }}
-              >
-                {l.name}
-              </h3>
-              <p
-                style={{
-                  fontSize: "13px",
-                  color: "var(--text-secondary)",
-                  lineHeight: "1.65",
-                }}
-              >
-                {l.description || "No description yet."}
-              </p>
-              <div
-                className="flex gap-5 mt-4 pt-4"
-                style={{
-                  borderTop: "1px solid var(--border-hair)",
-                  fontSize: "11px",
-                  color: "var(--text-faint)",
-                }}
-              >
-                <span>
-                  <b style={{ color: "var(--text-primary)", fontWeight: 600 }}>
-                    {published}
-                  </b>{" "}
-                  published
-                </span>
-                <span>
-                  <b style={{ color: "var(--text-primary)", fontWeight: 600 }}>
-                    {inProgress}
-                  </b>{" "}
-                  in progress
-                </span>
-                <span>
-                  <b style={{ color: "var(--text-primary)", fontWeight: 600 }}>
-                    {ideaCount}
-                  </b>{" "}
-                  ideas
-                </span>
-              </div>
-            </div>
-          );
-        })}
+      <ViewHead eyebrow="Publication" title="Labels" desc="Every label is its own thread of curiosity. Pick one to generate ideas, or start a new thread below." />
+      <div className="grid gap-5" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(240px, 1fr))" }}>
+        {labels.map((l: Label) => (
+          <LabelCard
+            key={l.id}
+            label={l}
+            published={articles.filter((a: Article) => a.label_id === l.id && a.status === "published").length}
+            inProgress={articles.filter((a: Article) => a.label_id === l.id && a.status !== "published").length}
+            ideaCount={ideas.filter((i: Idea) => i.label_id === l.id && i.status === "idea").length}
+            onSelect={() => onSelect(l.id)}
+            onSave={(description: string) => onUpdateLabel(l.id, { description })}
+          />
+        ))}
       </div>
       <div className="flex gap-2.5 mt-8" style={{ maxWidth: "400px" }}>
         <input
@@ -971,13 +1008,56 @@ function LabelsView({
           placeholder="New label, e.g. Language"
           className="flex-1 px-3 py-2"
           style={{ fontSize: "13px" }}
-          onKeyDown={(e) => {
-            if (e.key === "Enter") addLabel();
-          }}
+          onKeyDown={(e) => { if (e.key === "Enter") addLabel(); }}
         />
-        <button className="btn btn-spark" onClick={addLabel}>
-          Add label
-        </button>
+        <button className="btn btn-spark" onClick={addLabel}>Add label</button>
+      </div>
+    </div>
+  );
+}
+
+function LabelCard({ label, published, inProgress, ideaCount, onSelect, onSave }: any) {
+  const [desc, setDesc] = useState(label.description || "");
+  const dirty = desc !== (label.description || "");
+
+  return (
+    <div className="card animate-fade-in" style={{ padding: "1.5rem 1.75rem" }}>
+      <h3
+        className="font-serif mb-2 leading-snug cursor-pointer"
+        style={{ fontSize: "18px", fontWeight: 500, color: "var(--text-primary)" }}
+        onClick={onSelect}
+      >
+        {label.name}
+      </h3>
+      <textarea
+        value={desc}
+        onChange={(e) => setDesc(e.target.value)}
+        onClick={(e) => e.stopPropagation()}
+        onBlur={() => { if (dirty) onSave(desc); }}
+        placeholder="No description yet — click to add one."
+        rows={2}
+        className="w-full bg-transparent focus:outline-none resize-y"
+        style={{
+          fontSize: "13px",
+          color: "var(--text-secondary)",
+          lineHeight: "1.65",
+          border: "none",
+          padding: 0,
+        }}
+      />
+      {dirty && (
+        <div style={{ fontSize: "10px", color: "var(--accent)", marginTop: "2px" }}>
+          Unsaved — click elsewhere to save
+        </div>
+      )}
+      <div
+        className="flex gap-5 mt-4 pt-4 cursor-pointer"
+        style={{ borderTop: "1px solid var(--border-hair)", fontSize: "11px", color: "var(--text-faint)" }}
+        onClick={onSelect}
+      >
+        <span><b style={{ color: "var(--text-primary)", fontWeight: 600 }}>{published}</b> published</span>
+        <span><b style={{ color: "var(--text-primary)", fontWeight: 600 }}>{inProgress}</b> in progress</span>
+        <span><b style={{ color: "var(--text-primary)", fontWeight: 600 }}>{ideaCount}</b> ideas</span>
       </div>
     </div>
   );
@@ -993,8 +1073,14 @@ function StrategyView({
   onGenerate,
   onPromote,
   onDelete,
+  onChangeContentType,
 }: any) {
-  const sorted = [...ideas].sort((a, b) => (a.rank || 99) - (b.rank || 99));
+  const sorted = [...ideas].sort((a, b) => {
+    const aActive = a.status === "idea" ? 0 : 1;
+    const bActive = b.status === "idea" ? 0 : 1;
+    if (aActive !== bActive) return aActive - bActive;
+    return (a.rank || 99) - (b.rank || 99);
+  });
   return (
     <div>
       <ViewHead
@@ -1091,28 +1177,43 @@ function StrategyView({
               {idea.hook_reason}
             </p>
 
-            <div className="flex flex-wrap gap-1.5 mb-3">
-              {(idea.seo_keywords || []).map((k: string) => (
-                <span key={k} className="tag">
-                  {k}
+            <div className="flex flex-wrap items-center gap-1.5 mb-3">
+              <div className="flex flex-wrap gap-1.5">
+                {(idea.seo_keywords || []).map((k: string) => (
+                  <span key={k} className="tag">
+                    {k}
+                  </span>
+                ))}
+                {idea.series_position && (
+                  <span
+                    className="tag"
+                    style={{
+                      color: "var(--accent)",
+                      borderColor: "var(--accent-dim)",
+                    }}
+                  >
+                    {idea.series_position}
+                  </span>
+                )}
+                <span className="tag">curiosity {idea.curiosity_score}/10</span>
+                <span className="tag">seo {idea.seo_score}/10</span>
+                <span className={`status-pill ${STATUS_STYLES[idea.status]}`}>
+                  {idea.status}
                 </span>
-              ))}
-              {idea.series_position && (
-                <span
-                  className="tag"
-                  style={{
-                    color: "var(--accent)",
-                    borderColor: "var(--accent-dim)",
-                  }}
-                >
-                  {idea.series_position}
-                </span>
-              )}
-              <span className="tag">curiosity {idea.curiosity_score}/10</span>
-              <span className="tag">seo {idea.seo_score}/10</span>
-              <span className={`status-pill ${STATUS_STYLES[idea.status]}`}>
-                {idea.status}
-              </span>
+              </div>
+              <select
+                value={idea.content_type || "factual"}
+                onChange={(e) => onChangeContentType(idea.id, e.target.value)}
+                onClick={(e) => e.stopPropagation()}
+                className="px-2 py-1"
+                style={{ fontSize: "11px", marginLeft: "auto" }}
+              >
+                {CONTENT_TYPES.map((t) => (
+                  <option key={t} value={t}>
+                    {t}
+                  </option>
+                ))}
+              </select>
             </div>
 
             <div className="flex gap-2">
@@ -1163,9 +1264,7 @@ function PipelineView({
 }: any) {
   const columns: PipelineStatus[] = [
     "idea",
-    "researching",
     "drafting",
-    "editing",
     "published",
   ];
   return (
@@ -1306,158 +1405,115 @@ function PipelineCard({
 // button; steps become available once their prerequisite has run, so the
 // person is guided left-to-right instead of hunting for the right tab.
 function PipelineSteps({
-  article,
-  loading,
-  onGenerateArticle,
-  onGenerateImages,
-  onGenerateCaptions,
-  onInsertInternalLinks,
-  onInsertExternalLinks,
-  onGenerateHtml,
-  onCopyForBlogger,
-  onRunFullPipeline,
+  article, loading, progress,
+  onGenerateArticle, onGenerateImages, onGenerateCaptions,
+  onInsertInternalLinks, onInsertExternalLinks, onGenerateHtml,
+  onCopyForBlogger, onRunFullPipeline,
 }: any) {
   const hasContent = !!article.sections?.length;
   const steps = [
-    {
-      key: "article",
-      label: "Article",
-      done: hasContent,
-      ready: true,
-      onClick: onGenerateArticle,
-      loadingKey: "article",
-    },
-    {
-      key: "images",
-      label: "Images",
-      done: false,
-      ready: hasContent,
-      onClick: onGenerateImages,
-      loadingKey: "images",
-    },
-    {
-      key: "captions",
-      label: "Captions",
-      done: false,
-      ready: hasContent,
-      onClick: onGenerateCaptions,
-      loadingKey: "captions",
-    },
-    {
-      key: "internal",
-      label: "Internal Links",
-      done: false,
-      ready: hasContent,
-      onClick: onInsertInternalLinks,
-      loadingKey: "links-internal",
-    },
-    {
-      key: "external",
-      label: "External Links",
-      done: false,
-      ready: hasContent,
-      onClick: onInsertExternalLinks,
-      loadingKey: "links-external",
-    },
-    {
-      key: "html",
-      label: "HTML",
-      done: !!article.html,
-      ready: hasContent,
-      onClick: onGenerateHtml,
-      loadingKey: "html",
-    },
-    {
-      key: "copy",
-      label: "Copy for Blogger",
-      done: false,
-      ready: !!article.html,
-      onClick: onCopyForBlogger,
-      loadingKey: null,
-    },
+    { key: "article", label: "Article", done: hasContent, ready: true, onClick: onGenerateArticle, loadingKey: "article" },
+    { key: "images", label: "Images", done: false, ready: hasContent, onClick: onGenerateImages, loadingKey: "images" },
+    { key: "captions", label: "Captions", done: false, ready: hasContent, onClick: onGenerateCaptions, loadingKey: "captions" },
+    { key: "internal", label: "Internal Links", done: false, ready: hasContent, onClick: onInsertInternalLinks, loadingKey: "links-internal" },
+    { key: "external", label: "External Links", done: false, ready: hasContent, onClick: onInsertExternalLinks, loadingKey: "links-external" },
+    { key: "html", label: "HTML", done: !!article.html, ready: hasContent, onClick: onGenerateHtml, loadingKey: "html" },
+    { key: "copy", label: "Copy for Blogger", done: false, ready: !!article.html, onClick: onCopyForBlogger, loadingKey: null },
   ];
   const anyRunning = loading === "all";
 
+  function stepState(s: any) {
+    const p = progress?.[s.key];
+    if (anyRunning) {
+      if (p === "running") return "running";
+      if (p === "done") return "done";
+      if (p === "error") return "error";
+      return "waiting"; // hasn't gotten there yet this run
+    }
+    const isRunning = s.loadingKey && loading === s.loadingKey;
+    if (isRunning) return "running";
+    if (s.done) return "done";
+    return "idle";
+  }
+
   return (
-    <div
-      className="mb-7"
-      style={{
-        borderBottom: "1px solid var(--border-hair)",
-        paddingBottom: "1.5rem",
-      }}
-    >
-      <div className="flex items-center justify-between gap-3 mb-4 flex-wrap rounded-xl border border-[var(--border-hair)] bg-[var(--surface)] p-2.5">
-        {/* Main action */}
+    <div className="mb-7" style={{ borderBottom: "1px solid var(--border-hair)", paddingBottom: "1.5rem" }}>
+      <div
+        className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3 rounded-xl border border-[var(--border-hair)] bg-[var(--surface)] p-3"
+      >
         <button
           disabled={!!loading}
           onClick={onRunFullPipeline}
-          className="btn btn-spark flex items-center gap-2 shrink-0"
-          style={{
-            fontSize: "12px",
-            padding: "8px 16px",
-            minHeight: "34px",
-          }}
+          className="btn btn-spark flex items-center justify-center gap-2 shrink-0"
+          style={{ fontSize: "12px", padding: "8px 16px", minHeight: "34px" }}
         >
           <span>{anyRunning ? "⏳" : "▶"}</span>
           {anyRunning ? "Running…" : "Run Full Pipeline"}
         </button>
 
-        {/* Steps */}
         <div
-          className="flex items-center gap-1.5 flex-wrap flex-1"
-          style={{
-            paddingLeft: "12px",
-            borderLeft: "1px solid var(--border-hair)",
-          }}
+          className="flex items-center gap-1.5 flex-wrap flex-1 sm:pl-3"
+          style={{ borderLeft: "1px solid var(--border-hair)" }}
         >
           {steps.map((s, i) => {
-            const isRunning = s.loadingKey && loading === s.loadingKey;
+            const state = stepState(s);
+            const disabled =
+              !s.ready || anyRunning || (s.loadingKey ? loading === s.loadingKey : false);
+
+            const badgeColor =
+              state === "done" ? "var(--sage)" :
+              state === "error" ? "var(--danger)" :
+              state === "running" ? "var(--accent)" :
+              "var(--text-faint)";
 
             return (
               <button
                 key={s.key}
-                disabled={
-                  !s.ready ||
-                  anyRunning ||
-                  (s.loadingKey ? loading === s.loadingKey : false)
-                }
+                disabled={disabled}
                 onClick={s.onClick}
-                className={
-                  s.key === "copy"
-                    ? "btn btn-spark flex items-center gap-1.5"
-                    : "btn btn-ghost flex items-center gap-1.5"
-                }
+                className={s.key === "copy" ? "btn btn-spark flex items-center gap-1.5" : "btn btn-ghost flex items-center gap-1.5"}
                 style={{
                   fontSize: "11px",
                   padding: "5px 11px",
                   minHeight: "30px",
                   opacity: s.ready ? 1 : 0.45,
+                  borderColor: state === "running" ? "var(--accent)" : undefined,
                 }}
                 title={s.ready ? "" : "Complete the previous step first"}
               >
                 <span
-                  className="font-mono"
+                  className="font-mono shrink-0"
                   style={{
                     fontSize: "9px",
-                    opacity: 0.45,
                     minWidth: "14px",
+                    color: badgeColor,
+                    opacity: state === "idle" || state === "waiting" ? 0.45 : 1,
                   }}
                 >
                   {i + 1}
                 </span>
 
-                <span>{isRunning ? "Working…" : s.label}</span>
+                <span>
+                  {state === "running" ? "Working…" : s.label}
+                </span>
 
-                {s.done && s.key !== "copy" && (
+                {state === "done" && s.key !== "copy" && (
+                  <span style={{ color: "var(--sage)", fontSize: "12px", marginLeft: "2px" }}>✓</span>
+                )}
+                {state === "error" && (
+                  <span style={{ color: "var(--danger)", fontSize: "12px", marginLeft: "2px" }}>!</span>
+                )}
+                {state === "running" && (
                   <span
+                    className="shrink-0 animate-spin"
                     style={{
-                      color: "var(--sage)",
-                      fontSize: "12px",
-                      marginLeft: "2px",
+                      width: "9px",
+                      height: "9px",
+                      borderRadius: "50%",
+                      border: "1.5px solid var(--accent-dim)",
+                      borderTopColor: "var(--accent)",
                     }}
-                  >
-                    ✓
-                  </span>
+                  />
                 )}
               </button>
             );
@@ -1500,6 +1556,10 @@ function EditorView({
   onSaveEdits,
   onDiscardEdits,
   onDeleteArticle,
+  pipelineProgress,
+  toast,
+  onRefresh,
+  onGenerateMetaDescription,
 }: any) {
   const label = labels.find((l: Label) => l.id === article.label_id);
   const hasContent = article.sections && article.sections.length;
@@ -1521,6 +1581,7 @@ function EditorView({
 
     try {
       navigator.clipboard.writeText(value);
+      toast("Copied to clipboard.");
     } catch {
       const ta = document.createElement("textarea");
       ta.value = value;
@@ -1531,6 +1592,7 @@ function EditorView({
       ta.select();
       document.execCommand("copy");
       document.body.removeChild(ta);
+      toast("Copied to clipboard.");
     }
   }
 
@@ -1563,6 +1625,11 @@ function EditorView({
             View published ↗
           </a>
         )}
+        {article.permalink && (
+          <span className="tag font-mono" title="Suggested permalink slug">
+            /{article.permalink}
+          </span>
+        )}
 
         {/* Right-side controls */}
         <div className="flex items-center gap-2 ml-auto">
@@ -1584,7 +1651,7 @@ function EditorView({
             className="px-3 py-1.5"
             style={{ fontSize: "12.5px" }}
           >
-            {["idea", "researching", "drafting", "editing", "published"].map(
+            {["idea", "drafting", "published"].map(
               (s) => (
                 <option key={s} value={s}>
                   {s}
@@ -1643,6 +1710,7 @@ function EditorView({
             onGenerateHtml={onGenerateHtml}
             onCopyForBlogger={onCopyForBlogger}
             onRunFullPipeline={onRunFullPipeline}
+            progress={pipelineProgress}
           />
 
           {/* Two-column layout: article text | sidebar */}
@@ -2122,7 +2190,9 @@ function EditorView({
                 onLoadBlogs={onLoadBlogs}
                 onSelectBlog={onSelectBlog}
                 onPublish={onPublish}
+                onGenerateMetaDescription={() => onGenerateMetaDescription(article.id)}
               />
+              <VersionHistory articleId={article.id} toast={toast} onRestored={onRefresh} />
             </div>
           </div>
         </>
@@ -2137,6 +2207,185 @@ function EditorView({
 // updated requirements it should stay out of the way rather than living in
 // a prominent tab. Blogger connection/publishing lives here too since it's
 // a one-time setup step, not part of the every-article pipeline.
+function ApprovalQueueView({ articles, labels, loading, onOpen, onPublish }: any) {
+  const ready = articles.filter((a: Article) => a.html && a.status !== "published");
+
+  return (
+    <div>
+      <ViewHead
+        eyebrow="Review"
+        title="Approval queue"
+        desc="Articles with generated HTML, waiting for a human look before they go out."
+      />
+      {!ready.length && <EmptyState text="Nothing waiting on you right now." />}
+      <div style={{ borderTop: ready.length ? "1px solid var(--border-hair)" : "none" }}>
+        {ready.map((a: Article) => {
+          const label = labels.find((l: Label) => l.id === a.label_id);
+          return (
+            <div
+              key={a.id}
+              className="py-5 animate-fade-in"
+              style={{ borderBottom: "1px solid var(--border-hair)" }}
+            >
+              <div className="flex justify-between items-start gap-4 mb-2">
+                <div
+                  className="font-serif cursor-pointer leading-snug"
+                  style={{ fontSize: "16.5px", fontWeight: 500, color: "var(--text-primary)" }}
+                  onClick={() => onOpen(a.id)}
+                >
+                  {a.title}
+                </div>
+                {label && <span className="tag shrink-0">{label.name}</span>}
+              </div>
+              <p
+                style={{
+                  fontSize: "13px",
+                  color: "var(--text-secondary)",
+                  lineHeight: "1.65",
+                  marginBottom: "10px",
+                }}
+              >
+                {a.tldr || "No summary."}
+              </p>
+              <div className="flex gap-2">
+                <button
+                  className="btn btn-ghost"
+                  style={{ fontSize: "12px", padding: "5px 12px" }}
+                  onClick={() => onOpen(a.id)}
+                >
+                  Open in editor
+                </button>
+                <button
+                  className="btn btn-ghost"
+                  style={{ fontSize: "12px", padding: "5px 12px" }}
+                  disabled={loading === "publish"}
+                  onClick={() => onPublish(a.id, "draft")}
+                >
+                  Save as Blogger draft
+                </button>
+                <button
+                  className="btn btn-spark"
+                  style={{ fontSize: "12px", padding: "5px 12px" }}
+                  disabled={loading === "publish"}
+                  onClick={() => onPublish(a.id, "publish")}
+                >
+                  Publish live
+                </button>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function SerpPreview({ title, url, description }: { title: string; url: string; description: string }) {
+  return (
+    <div
+      className="rounded-lg p-4"
+      style={{
+        background: "var(--bg-raised)",
+        border: "1px solid var(--border-hair)",
+        fontFamily: "arial, sans-serif",
+      }}
+    >
+      <div style={{ fontSize: "12.5px", color: "var(--sage)", marginBottom: "2px" }}>{url}</div>
+      <div style={{ fontSize: "17px", color: "#8ab4f8", marginBottom: "3px", lineHeight: "1.3" }}>{title}</div>
+      <div style={{ fontSize: "13px", color: "var(--text-secondary)", lineHeight: "1.5" }}>{description}</div>
+    </div>
+  );
+}
+
+function VersionHistory({ articleId, toast, onRestored }: any) {
+  const [open, setOpen] = useState(false);
+  const [versions, setVersions] = useState<any[] | null>(null);
+  const [loading, setLoading] = useState(false);
+
+  async function load() {
+    setLoading(true);
+    try {
+      setVersions(await api<any[]>(`/api/articles/versions?articleId=${articleId}`));
+    } catch (e: any) {
+      toast(e.message, "error");
+    }
+    setLoading(false);
+  }
+
+  async function restore(versionId: string) {
+    if (!window.confirm("Restore this version? Your current content is saved as a new version first, so nothing is lost.")) return;
+    try {
+      await api("/api/articles/versions/restore", {
+        method: "POST",
+        body: JSON.stringify({ versionId }),
+      });
+      toast("Version restored.");
+      await onRestored();
+      await load();
+    } catch (e: any) {
+      toast(e.message, "error");
+    }
+  }
+
+  return (
+    <div className="mt-4">
+      <button
+        onClick={() => {
+          setOpen(!open);
+          if (!open && versions === null) load();
+        }}
+        className="w-full text-left flex items-center justify-between px-1 py-2.5"
+        style={{
+          fontSize: "10.5px",
+          letterSpacing: "0.14em",
+          textTransform: "uppercase",
+          color: "var(--text-faint)",
+        }}
+      >
+        <span>Version history</span>
+        <span style={{ fontSize: "14px", lineHeight: 1 }}>{open ? "−" : "+"}</span>
+      </button>
+      {open && (
+        <div
+          className="rounded-[10px] p-3 space-y-2 animate-fade-in"
+          style={{
+            background: "var(--bg-surface)",
+            border: "1px solid var(--border-hair)",
+            fontSize: "12px",
+          }}
+        >
+          {loading && <div style={{ color: "var(--text-faint)" }}>Loading…</div>}
+          {!loading && versions?.length === 0 && (
+            <div style={{ color: "var(--text-faint)" }}>No earlier versions saved yet.</div>
+          )}
+          {!loading &&
+            versions?.map((v) => (
+              <div
+                key={v.id}
+                className="flex justify-between items-center py-1.5"
+                style={{ borderBottom: "1px solid var(--border-hair)" }}
+              >
+                <div>
+                  <div style={{ color: "var(--text-primary)" }}>{v.title}</div>
+                  <div style={{ fontSize: "10.5px", color: "var(--text-faint)" }}>
+                    {new Date(v.created_at).toLocaleString()} · {v.reason === "manual-edit" ? "before a manual edit" : "before a regenerate"}
+                  </div>
+                </div>
+                <button
+                  className="btn btn-ghost"
+                  style={{ fontSize: "11px", padding: "3px 9px" }}
+                  onClick={() => restore(v.id)}
+                >
+                  Restore
+                </button>
+              </div>
+            ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function AdvancedSettings({
   article,
   seo,
@@ -2148,6 +2397,7 @@ function AdvancedSettings({
   onLoadBlogs,
   onSelectBlog,
   onPublish,
+  onGenerateMetaDescription,
 }: any) {
   return (
     <div className="mt-4">
@@ -2206,6 +2456,23 @@ function AdvancedSettings({
                 />
                 <Kv k="SEO title" v={seo.seo_title} />
                 <Kv k="Meta description" v={seo.meta_description} />
+                {seo && (
+                  <div className="mt-3">
+                    <SerpPreview
+                      title={seo.seo_title || article.title}
+                      url={`${BLOG_URL}/${article.permalink || ""}`}
+                      description={seo.meta_description || article.tldr || ""}
+                    />
+                  </div>
+                )}
+                <button
+                  className="btn btn-ghost mt-1"
+                  style={{ fontSize: "11px", padding: "4px 9px" }}
+                  disabled={loading === "meta"}
+                  onClick={onGenerateMetaDescription}
+                >
+                  {loading === "meta" ? "Generating…" : "Regenerate meta description"}
+                </button>
               </>
             ) : (
               <p style={{ color: "var(--text-faint)" }}>
@@ -2346,6 +2613,144 @@ function LinkGroup({ title, items, showCategory }: any) {
           None
         </div>
       )}
+    </div>
+  );
+}
+
+// ─── Style view ───────────────────────────────────────────────────────────
+function StyleView({ toast }: { toast: (message: string, kind?: Toast["kind"], duration?: number) => void }) {
+  const [samplesText, setSamplesText] = useState("");
+  const [profile, setProfile] = useState<any>(null);
+  const [draftProfile, setDraftProfile] = useState("");
+  const [loading, setLoading] = useState<"extract" | "save" | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    api<any>("/api/style-profile")
+      .then((p) => {
+        setProfile(p);
+        setDraftProfile(p?.profile_text || "");
+      })
+      .catch(() => {});
+  }, []);
+
+  async function extract() {
+    const samples = samplesText
+      .split(/\n---\n/)
+      .map((s) => s.trim())
+      .filter(Boolean);
+    if (!samples.length) {
+      setError(
+        "Paste at least one writing sample first. Separate multiple samples with a line containing just ---.",
+      );
+      return;
+    }
+    setLoading("extract");
+    setError(null);
+    try {
+      const p = await api<any>("/api/style-profile", {
+        method: "POST",
+        body: JSON.stringify({ samples }),
+      });
+      setProfile(p);
+      setDraftProfile(p.profile_text);
+      toast("Style profile extracted — it'll be used in every article generation from now on.");
+    } catch (e: any) {
+      setError(e.message);
+    }
+    setLoading(null);
+  }
+
+  async function saveProfile() {
+    setLoading("save");
+    setError(null);
+    try {
+      const p = await api<any>("/api/style-profile", {
+        method: "PATCH",
+        body: JSON.stringify({ profile_text: draftProfile }),
+      });
+      setProfile(p);
+      toast("Changes saved.");
+    } catch (e: any) {
+      setError(e.message);
+    }
+    setLoading(null);
+  }
+
+  return (
+    <div>
+      <ViewHead
+        eyebrow="Voice"
+        title="Writing style"
+        desc="Paste a few of your own past posts to extract a reusable voice profile. Every article generation leans on this instead of the generic default voice."
+      />
+
+      {error && <Notice kind="warn">{error}</Notice>}
+
+      <div className="grid gap-6" style={{ gridTemplateColumns: "1fr 1fr" }}>
+        <div>
+          <div
+            style={{
+              fontSize: "10px",
+              letterSpacing: "0.16em",
+              textTransform: "uppercase",
+              color: "var(--text-faint)",
+              marginBottom: "8px",
+            }}
+          >
+            Paste samples (separate multiple with a line of just ---)
+          </div>
+          <textarea
+            value={samplesText}
+            onChange={(e) => setSamplesText(e.target.value)}
+            rows={16}
+            placeholder={"Paste a full post here.\n---\nPaste another post here."}
+            className="w-full px-3 py-2"
+            style={{ fontSize: "13px", lineHeight: "1.6" }}
+          />
+          <button
+            className="btn btn-spark mt-3"
+            disabled={loading === "extract"}
+            onClick={extract}
+          >
+            {loading === "extract"
+              ? "Extracting…"
+              : profile
+                ? "Re-extract from these samples"
+                : "Extract style profile"}
+          </button>
+        </div>
+
+        <div>
+          <div
+            style={{
+              fontSize: "10px",
+              letterSpacing: "0.16em",
+              textTransform: "uppercase",
+              color: "var(--text-faint)",
+              marginBottom: "8px",
+            }}
+          >
+            Current profile
+            {profile ? ` — from ${profile.sample_count} sample(s), ~${profile.sample_word_count} words` : ""}
+          </div>
+          <textarea
+            value={draftProfile}
+            onChange={(e) => setDraftProfile(e.target.value)}
+            rows={16}
+            placeholder="No style profile yet — extract one from the left, or write/paste one directly here."
+            className="w-full px-3 py-2"
+            style={{ fontSize: "13px", lineHeight: "1.6" }}
+          />
+          <button
+            className="btn btn-ghost mt-3"
+            disabled={loading === "save" || draftProfile === (profile?.profile_text || "")}
+            onClick={saveProfile}
+          >
+            Save changes
+          </button>
+        </div>
+      </div>
     </div>
   );
 }

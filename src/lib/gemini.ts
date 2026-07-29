@@ -1,13 +1,43 @@
-// Thin wrapper around the Gemini REST API (generativelanguage.googleapis.com).
-// Uses fetch directly so there's no extra SDK dependency to manage.
+// FILE: src/lib/gemini.ts (top section replaced)
 
-const STYLE_CONTRACT = `You write for "Synapse Snaps," a curiosity-driven publication.
+const BASE_VOICE = `You write for "Synapse Snaps," a curiosity-driven publication.
 VOICE: approachable and curious, like explaining a big question to a smart friend. Professional but conversational. Written from a learner's perspective, not an expert's. Clear, no unnecessary complexity. Centered on questions, mysteries, and surprising insight.
 NEVER use these words or characters: delve, leverage, unlock, tapestry, testament, streamlined, or the em dash character (—). Use a comma or period instead.
 Avoid textbook tone, clickbait, unexplained jargon, and long run-on sentences.
 Return ONLY valid JSON. Do not include any planning, outline, notes, or commentary before or after the JSON object — the very first character of your response must be "{" and the very last must be "}". No markdown code fences.`;
 
-export async function callGemini(userPrompt: string, maxOutputTokens = 2048): Promise<string> {
+export const CONTENT_TYPES = ["factual", "opinion", "research", "listicle", "narrative"] as const;
+export type ContentType = (typeof CONTENT_TYPES)[number];
+
+const STRUCTURE_MODULES: Record<ContentType, string> = {
+  factual: `CONTENT TYPE: Factual explainer. Structure sections as: set up the question or misconception, explain the actual mechanism/answer in plain terms, then a "why it matters" or "what this means" close. Prioritize accuracy and clarity over cleverness. Refer to general scientific consensus rather than a single unnamed study.`,
+  opinion: `CONTENT TYPE: Opinion piece. State a clear point of view early — don't hedge it into mush. Acknowledge at least one real counterargument or complication, then explain why the position still holds. A little provocative is fine, but the reasoning must be sound, not contrarian for its own sake. Close with a clear, restated position, not a wishy-washy "who's to say."`,
+  research: `CONTENT TYPE: Research roundup. Each section should follow a claim → evidence → so-what shape: state a specific finding, explain the evidence/mechanism behind it in plain terms, then say why a reader should care. Favor precision and named sources/organizations over vague "studies show." Flag genuine uncertainty or disagreement in the field where it exists rather than overclaiming.`,
+  listicle: `CONTENT TYPE: Listicle. Each "section" is one list item: a short punchy heading (can include a number, e.g. "1. ..."), followed by 2-4 sentences of real substance, not filler. Keep items roughly parallel in structure and length. The tldr should frame why this particular list matters, not just "here are N things."`,
+  narrative: `CONTENT TYPE: Narrative feature. Structure as a story arc — open with a scene, person, or moment rather than a thesis statement, build through rising specificity, and let the point of the piece emerge through the narrative rather than being stated upfront. Sections should read like chapters, not standalone facts.`,
+};
+
+// Composes the final system instruction: base voice + content-type structure
+// rules + (if one exists) the extracted writer's-voice profile, which takes
+// priority over the generic voice guidance wherever the two disagree.
+export function buildSystemInstruction(contentType?: string | null, styleProfile?: string | null): string {
+  const type: ContentType = (CONTENT_TYPES as readonly string[]).includes(contentType || "")
+    ? (contentType as ContentType)
+    : "factual";
+  const parts = [BASE_VOICE, STRUCTURE_MODULES[type]];
+  if (styleProfile && styleProfile.trim()) {
+    parts.push(
+      `WRITER'S VOICE PROFILE — this is a real person's actual writing style, extracted from their own past posts. Where it conflicts with the generic voice guidance above, follow THIS instead:\n${styleProfile.trim()}`
+    );
+  }
+  return parts.join("\n\n");
+}
+
+export async function callGemini(
+  userPrompt: string,
+  maxOutputTokens = 2048,
+  systemInstruction: string = buildSystemInstruction()
+): Promise<string> {
   const apiKey = process.env.GEMINI_API_KEY;
   const model = process.env.GEMINI_MODEL || "gemini-2.0-flash";
   if (!apiKey) {
@@ -20,7 +50,7 @@ export async function callGemini(userPrompt: string, maxOutputTokens = 2048): Pr
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        systemInstruction: { parts: [{ text: STYLE_CONTRACT }] },
+        systemInstruction: { parts: [{ text: systemInstruction }] },
         contents: [{ role: "user", parts: [{ text: userPrompt }] }],
         generationConfig: {
           maxOutputTokens,
@@ -40,17 +70,12 @@ export async function callGemini(userPrompt: string, maxOutputTokens = 2048): Pr
 
   const finishReason = data?.candidates?.[0]?.finishReason;
   if (finishReason === "MAX_TOKENS") {
-    console.warn(
-      `[gemini] Response truncated (finishReason=MAX_TOKENS) at maxOutputTokens=${maxOutputTokens}. Consider raising it or shortening the prompt.`
-    );
+    console.warn(`[gemini] Response truncated (finishReason=MAX_TOKENS) at maxOutputTokens=${maxOutputTokens}. Consider raising it or shortening the prompt.`);
   } else if (finishReason && finishReason !== "STOP") {
     console.warn(`[gemini] Unusual finishReason: ${finishReason}`);
   }
 
   const parts: any[] = data?.candidates?.[0]?.content?.parts ?? [];
-  // Some Gemini models can emit separate "thought" parts (reasoning traces)
-  // alongside the real answer. Exclude those if present so they never get
-  // concatenated into the text we try to parse as JSON.
   const answerParts = parts.filter((p) => !p.thought);
   const text = (answerParts.length ? answerParts : parts).map((p: any) => p.text || "").join("");
   if (!text) throw new Error("Gemini returned an empty response.");

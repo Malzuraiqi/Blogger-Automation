@@ -38,6 +38,7 @@ export async function POST(req: NextRequest) {
       searchDescription: seo?.meta_description || undefined,
       isDraft: mode === "draft",
       publishDate: mode === "schedule" ? publishAt : undefined,
+      url: article.permalink || undefined,   // <-- add this
     });
 
     await sb

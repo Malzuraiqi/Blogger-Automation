@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { supabaseServer } from "@/lib/supabase";
-import { callGemini, parseModelJSON } from "@/lib/gemini";
+import { callGemini, parseModelJSON, CONTENT_TYPES } from "@/lib/gemini";
 
 export async function POST(req: NextRequest) {
   const sb = supabaseServer();
@@ -17,10 +17,10 @@ export async function POST(req: NextRequest) {
 Already published in this label: ${published?.length ? published.map((a) => a.title).join("; ") : "nothing yet"}
 Already have as ideas: ${existingIdeas?.length ? existingIdeas.map((i) => i.title).join("; ") : "none"}
 
-Generate 15 NEW article ideas for this label, distinct from what's already published or listed. Rank for curiosity factor, SEO potential, audience interest, connection to previous articles, and series potential.
+Generate 15 NEW article ideas for this label, distinct from what's already published or listed. Rank for curiosity factor, SEO potential, audience interest, connection to previous articles, and series potential. For each idea also pick the single best-fitting content type from EXACTLY this list: ${CONTENT_TYPES.join(", ")} (factual = plain explainer, opinion = a stance-driven piece, research = claim/evidence/source roundup, listicle = numbered list format, narrative = story-driven feature).
 
 Return ONLY a JSON array, each item shaped exactly like:
-{"title":"...", "mainQuestion":"...", "hook":"why a reader would click, one sentence", "seoKeywords":["...","..."], "series":"series name and part, or null if standalone", "curiosity":1-10, "seoScore":1-10, "audience":1-10, "rank":1}
+{"title":"...", "mainQuestion":"...", "hook":"why a reader would click, one sentence", "seoKeywords":["...","..."], "series":"series name and part, or null if standalone", "curiosity":1-10, "seoScore":1-10, "audience":1-10, "rank":1, "contentType":"factual|opinion|research|listicle|narrative"}
 Order the array by rank, best idea first (rank 1). No text before or after the array.`;
 
   const raw = await callGemini(prompt, 4096);
@@ -38,6 +38,7 @@ Order the array by rank, best idea first (rank 1). No text before or after the a
     audience_score: idea.audience || null,
     rank: idea.rank || i + 1,
     status: "idea" as const,
+    content_type: (CONTENT_TYPES as readonly string[]).includes(idea.contentType) ? idea.contentType : "factual",
   }));
 
   const { data, error } = await sb.from("ideas").insert(rows).select();

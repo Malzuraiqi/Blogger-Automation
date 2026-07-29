@@ -33,3 +33,14 @@ export async function POST(req: NextRequest) {
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
   return NextResponse.json(data);
 }
+
+// add this export alongside GET/POST
+export async function PATCH(req: NextRequest) {
+  const sb = supabaseServer();
+  const body = await req.json();
+  if (!body.id) return NextResponse.json({ error: "id is required" }, { status: 400 });
+  const { id, ...updates } = body;
+  const { data, error } = await sb.from("labels").update(updates).eq("id", id).select().single();
+  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+  return NextResponse.json(data);
+}

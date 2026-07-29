@@ -104,7 +104,7 @@ export async function listBlogs(accessToken: string) {
 export async function publishPost(
   accessToken: string,
   blogId: string,
-  post: { title: string; content: string; labels: string[]; searchDescription?: string; isDraft: boolean; publishDate?: string }
+  post: { title: string; content: string; labels: string[]; searchDescription?: string; isDraft: boolean; publishDate?: string; url?: string }
 ) {
   const params = new URLSearchParams();
   if (post.isDraft) params.set("isDraft", "true");
@@ -118,6 +118,7 @@ export async function publishPost(
       labels: post.labels,
       ...(post.searchDescription ? { searchDescription: post.searchDescription } : {}),
       ...(post.publishDate ? { published: post.publishDate } : {}),
+      ...(post.url ? { url: post.url } : {}),
     }),
   });
   if (!res.ok) throw new Error(`Blogger publish failed: ${await res.text()}`);
