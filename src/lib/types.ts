@@ -56,6 +56,8 @@ export interface Article {
   content_type: string | null;
   published_at: string | null;
   blogger_post_id: string | null;
+  audio_url: string | null;
+  audio_duration_seconds: number | null;
 }
 
 export interface ArticleSeo {

@@ -85,6 +85,22 @@ function imageBlock(img: any, index: number): string {
   return `<img src="${esc(src)}" alt="${esc(img.caption || img.placement || "")}">\n\n<p><em>${inlineFormat(img.caption || "")}</em></p>`;
 }
 
+function formatMinutes(seconds: number): number {
+  return Math.max(1, Math.round(seconds / 60));
+}
+
+function audioPlayerBlock(article: any): string {
+  if (!article.audio_url) return "";
+  const durationLabel = article.audio_duration_seconds ? `${formatMinutes(article.audio_duration_seconds)} min` : null;
+  return `<div style="margin: 22px 0; padding: 16px 20px; background: #f4f2ec; border: 1px solid #e3e0d6; border-radius: 12px; text-align: center;">
+  <div style="font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; color: #8a8677; margin-bottom: 10px; font-weight: 600;">🎧 Listen to this article${durationLabel ? ` — ${durationLabel}` : ""}</div>
+  <audio controls controlsList="nodownload" style="width: 100%; max-width: 480px; height: 38px; border-radius: 8px;">
+    <source src="${esc(article.audio_url)}" type="audio/mpeg">
+    Your browser does not support the audio element.
+  </audio>
+</div>`;
+}
+
 // `placement_note` (e.g. "Use this to explain the biological process of how
 // taste receptors function") is guidance written for whoever's assembling
 // the article, not reader-facing copy — it must never be printed verbatim
@@ -111,12 +127,13 @@ function buildBloggerHtml(article: any, images: any[], links: any[]): string {
   // Reading time leads the post so readers know what they're signing up
   // for before they start, rather than finding out at the very end.
   if (article.reading_time_minutes) {
-    parts.push(`<p><strong>Estimated reading time:</strong> ${article.reading_time_minutes} minutes</p>`);
+    const listenPart = article.audio_duration_seconds
+      ? ` &middot; <strong>Listening time:</strong> ${formatMinutes(article.audio_duration_seconds)} minutes`
+      : "";
+    parts.push(`<p><strong>Estimated reading time:</strong> ${article.reading_time_minutes} minutes${listenPart}</p>`);
   }
-  // No <h1> here — Blogger already shows the post's own title (the SEO
-  // title, set separately), so repeating it as an H1 inside the body would
-  // just show the title twice.
   if (article.tldr) parts.push(`<p><strong>TL;DR:</strong> ${inlineFormat(article.tldr)}</p>`);
+  parts.push(audioPlayerBlock(article)); // right after TL;DR, before the featured image
   if (featured) parts.push(imageBlock(featured, images.indexOf(featured)));
 
   const sections: { heading: string; body: string }[] = article.sections || [];

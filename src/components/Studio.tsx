@@ -20,6 +20,7 @@ type EditorTab = "images" | "links";
 type LoadingKey =
   | "ideas"
   | "article"
+  | "audio"
   | "images"
   | "captions"
   | "links-internal"
@@ -322,6 +323,9 @@ export default function Studio() {
   const generateArticle = (articleId: string) =>
     runStep("article", "/api/generate/article", { articleId }, "Article generated.");
 
+  const generateAudio = (articleId: string) =>
+    runStep("audio", "/api/generate/audio", { articleId }, "Audio narration generated.");
+
   // Unlike the other steps, "Generate Images" can succeed (200) while still
   // reporting per-image generation failures (e.g. no IMAGE_PROVIDER
   // configured, or the provider/ImgBB call failed) — those live in the
@@ -423,7 +427,7 @@ export default function Studio() {
     setLoading("all");
     setError(null);
     const warnings: string[] = [];
-    const stepKeys = ["article", "images", "captions", "internal", "external", "html"];
+    const stepKeys = ["article", "audio", "images", "captions", "internal", "external", "html"];
     setPipelineProgress(Object.fromEntries(stepKeys.map((k) => [k, "pending"])) as any);
 
     async function step(key: string, label: string, fn: () => Promise<void>) {
@@ -446,6 +450,11 @@ export default function Studio() {
     } else {
       setPipelineProgress((p) => ({ ...p, article: "done" }));
     }
+
+    await step("audio", "Generate Audio", async () => {
+      await api("/api/generate/audio", { method: "POST", body: JSON.stringify({ articleId }) });
+      await refreshAll();
+    });
 
     await step("images", "Generate Images", async () => {
       const result = await api<{ provider: string | null; generationErrors: string[] }>(
@@ -713,6 +722,7 @@ export default function Studio() {
               setArticleStatus(activeArticle.id, s)
             }
             onGenerateArticle={() => generateArticle(activeArticle.id)}
+            onGenerateAudio={() => generateAudio(activeArticle.id)}
             onGenerateImages={() => generateImages(activeArticle.id)}
             onRegenerateImage={regenerateImage}
             onGenerateCaptions={() => generateCaptions(activeArticle.id)}
@@ -1547,13 +1557,14 @@ function PipelineCard({
 // person is guided left-to-right instead of hunting for the right tab.
 function PipelineSteps({
   article, loading, progress,
-  onGenerateArticle, onGenerateImages, onGenerateCaptions,
+  onGenerateArticle, onGenerateAudio, onGenerateImages, onGenerateCaptions,
   onInsertInternalLinks, onInsertExternalLinks, onGenerateHtml,
-  onCopyForBlogger, onRunFullPipeline,
+  onCopyForBlogger, onRunFullPipeline, 
 }: any) {
   const hasContent = !!article.sections?.length;
   const steps = [
     { key: "article", label: "Article", done: hasContent, ready: true, onClick: onGenerateArticle, loadingKey: "article" },
+    { key: "audio", label: "Audio", done: !!article.audio_url, ready: hasContent, onClick: onGenerateAudio, loadingKey: "audio" },
     { key: "images", label: "Images", done: false, ready: hasContent, onClick: onGenerateImages, loadingKey: "images" },
     { key: "captions", label: "Captions", done: false, ready: hasContent, onClick: onGenerateCaptions, loadingKey: "captions" },
     { key: "internal", label: "Internal Links", done: false, ready: hasContent, onClick: onInsertInternalLinks, loadingKey: "links-internal" },
@@ -1682,6 +1693,7 @@ function EditorView({
   onSwitchArticle,
   onStatusChange,
   onGenerateArticle,
+  onGenerateAudio,
   onGenerateImages,
   onRegenerateImage,
   onGenerateCaptions,
@@ -1844,6 +1856,7 @@ function EditorView({
             article={article}
             loading={loading}
             onGenerateArticle={onGenerateArticle}
+            onGenerateAudio={onGenerateAudio}
             onGenerateImages={onGenerateImages}
             onGenerateCaptions={onGenerateCaptions}
             onInsertInternalLinks={onInsertInternalLinks}

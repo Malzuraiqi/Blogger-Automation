@@ -34,53 +34,7 @@ export function isImageHostConfigured(): boolean {
   return !!process.env.IMGBB_API_KEY;
 }
 
-// fetch() throws a bare `TypeError: fetch failed` on any network-level
-// failure (DNS lookup failed, connection refused, TLS handshake failed,
-// blocked by a firewall/corporate proxy, etc.) — the actually useful detail
-// lives one or more levels down in `error.cause`, which Node doesn't surface
-// by default. This wrapper unwraps that chain and names which service/URL
-// was being called, so "failed to fetch" turns into something like
-// "Hugging Face: network request to https://api-inference.huggingface.co/... 
-// failed (ENOTFOUND -> getaddrinfo ENOTFOUND api-inference.huggingface.co)"
-// — actionable instead of a dead end.
-async function safeFetch(service: string, url: string, init?: RequestInit): Promise<Response> {
-  try {
-    return await fetch(url, init);
-  } catch (e: any) {
-    const chain: string[] = [];
-    let cur: any = e;
-    let depth = 0;
-    while (cur && depth < 5) {
-      if (cur.code) chain.push(String(cur.code));
-      else if (cur.message) chain.push(String(cur.message));
-      cur = cur.cause;
-      depth++;
-    }
-    const detail = chain.length ? chain.join(" -> ") : String(e);
-    throw new Error(
-      `${service}: network request to ${url} never got a response (${detail}). This means the server process couldn't reach that host at all — check the server's internet connection, and any firewall, antivirus, or corporate/VPN proxy that might be blocking outbound HTTPS to this domain.`
-    );
-  }
-}
-
-// Free-tier image providers (Pollinations especially, which caps a single
-// IP at one in-flight request) return 429 under any load at all — including
-// briefly overlapping requests even when the app is already calling them
-// one at a time. This retries a 429 a few times with increasing delay
-// before giving up, which clears the great majority of these.
-async function fetchWithRetry(service: string, url: string, init: RequestInit | undefined, maxAttempts = 4): Promise<Response> {
-  let lastRes: Response | null = null;
-  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-    const res = await safeFetch(service, url, init);
-    if (res.status !== 429) return res;
-    lastRes = res;
-    if (attempt < maxAttempts) {
-      const waitMs = 3000 * attempt; // 3s, 6s, 9s...
-      await new Promise((r) => setTimeout(r, waitMs));
-    }
-  }
-  return lastRes as Response;
-}
+import { safeFetch, fetchWithRetry } from "@/lib/net";
 
 export async function generateImage(prompt: string): Promise<string> {
   const provider = getConfiguredProvider();
